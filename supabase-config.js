@@ -12,5 +12,5 @@ window.HORNO28_SUPABASE_CONFIGURED =
     Boolean(
         window.HORNO28_SUPABASE_URL &&
         window.HORNO28_SUPABASE_PUBLISHABLE_KEY &&
-        window.HORNO28_SUPABASE_PUBLISHABLE_KEY.startsWith('sb_publishable_eOFVdJGI9')
+        window.HORNO28_SUPABASE_PUBLISHABLE_KEY.startsWith('sb_publishable_')
     );
