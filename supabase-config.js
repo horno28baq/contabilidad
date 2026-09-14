@@ -3,10 +3,10 @@
 window.HORNO28_SUPABASE_URL =
     'https://ebqdrjckswulwfdxmsdq.supabase.co';
 
-// sb_publishable_eOFVdJGI9
+// Supabase Publishable Key
 window.HORNO28_SUPABASE_PUBLISHABLE_KEY =
-    'sb_publishable_eOFVdJGI9';
+    'TU_PUBLISHABLE_KEY';
 
 window.HORNO28_SUPABASE_CONFIGURED =
     window.HORNO28_SUPABASE_URL.includes('supabase.co') &&
-    !window.HORNO28_SUPABASE_PUBLISHABLE_KEY.includes('sb_publishable_eOFVdJGI9');
+    window.HORNO28_SUPABASE_PUBLISHABLE_KEY.startsWith('sb_publishable_');
