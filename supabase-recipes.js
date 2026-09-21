@@ -1,158 +1,176 @@
+/* ============================================================
+   HORNO 28 - SUPABASE RECIPES / ESCANDALLOS
+   Sincronización cloud para recipes + recipe_items
+   ============================================================ */
+
 (function () {
     'use strict';
 
-    let initialized = false;
+    const VERSION = 'H28-RECIPES-CLOUD-v3';
+    window.HORNO28_RECIPES_SYNC_VERSION = VERSION;
 
-    function waitForDependencies() {
-        if (
-            !window.horno28Supabase ||
-            !window.HORNO28_CURRENT_BUSINESS_ID ||
-            typeof window.saveRecipe !== 'function' ||
-            typeof window.deleteRecipe !== 'function'
-        ) {
-            setTimeout(waitForDependencies, 500);
+    console.log(`[${VERSION}] cargando...`);
+
+    function waitForDependencies(callback, attempts = 0) {
+        const ready =
+            window.horno28Supabase &&
+            window.HORNO28_CURRENT_BUSINESS_ID &&
+            typeof window.saveRecipe === 'function' &&
+            typeof window.deleteRecipe === 'function';
+
+        if (ready) {
+            callback();
             return;
         }
 
-        if (!initialized) {
-            initialized = true;
-            initRecipesCloud();
+        if (attempts >= 100) {
+            console.warn(`[${VERSION}] dependencias no disponibles.`);
+            return;
         }
+
+        setTimeout(() => {
+            waitForDependencies(callback, attempts + 1);
+        }, 300);
     }
 
-    async function initRecipesCloud() {
+    /* ============================================================
+       ACCESO A VARIABLES LOCALES DEL APP
+       IMPORTANTE:
+       recipes e ingredients NO necesariamente existen en window.
+       ============================================================ */
+
+    function getLocalRecipes() {
         try {
-            await loadRecipesFromCloud();
-            installRecipeWrappers();
-        } catch (error) {
-            console.error('HORNO 28 - Error cargando fichas técnicas:', error);
-            console.warn(
-                'Las fichas técnicas locales se mantienen sin modificar.'
-            );
-            installRecipeWrappers();
+            return Array.isArray(recipes) ? recipes : [];
+        } catch (e) {
+            return [];
         }
     }
 
-    // ---------------------------------------------------------
-    // CARGAR FICHAS DESDE SUPABASE
-    // ---------------------------------------------------------
-
-    async function loadRecipesFromCloud() {
-
-        const businessId = window.HORNO28_CURRENT_BUSINESS_ID;
-
-        if (!businessId) return;
-
-        const { data: cloudRecipes, error: recipesError } =
-            await window.horno28Supabase
-                .from('recipes')
-                .select('*')
-                .eq('business_id', businessId)
-                .eq('active', true)
-                .order('created_at', { ascending: true });
-
-        if (recipesError) {
-            throw recipesError;
+    function getLocalIngredients() {
+        try {
+            return Array.isArray(ingredients) ? ingredients : [];
+        } catch (e) {
+            return [];
         }
+    }
 
-        if (!cloudRecipes || cloudRecipes.length === 0) {
+    /* ============================================================
+       RECUPERAR INGREDIENTES LEGACY DESDE LOCALSTORAGE
+       ============================================================ */
 
-            const localRecipes =
-                Array.isArray(window.recipes)
-                    ? window.recipes
-                    : [];
+    function getLegacyIngredients() {
+        try {
+            const raw = localStorage.getItem('h28_ingredients');
+            if (!raw) return [];
 
-            if (localRecipes.length > 0) {
+            const parsed = JSON.parse(raw);
 
-                const migrate = confirm(
-                    'HORNO 28 encontró fichas técnicas guardadas localmente ' +
-                    'que todavía no están en la nube.\n\n' +
-                    '¿Deseas migrarlas ahora a Supabase?'
-                );
-
-                if (migrate) {
-                    await migrateLocalRecipes(localRecipes);
-                }
-            }
-
-            return;
-        }
-
-        const recipeIds = cloudRecipes.map(r => r.id);
-
-        let cloudItems = [];
-
-        if (recipeIds.length > 0) {
-
-            const { data, error: itemsError } =
-                await window.horno28Supabase
-                    .from('recipe_items')
-                    .select('*')
-                    .in('recipe_id', recipeIds);
-
-            if (itemsError) {
-                throw itemsError;
-            }
-
-            cloudItems = data || [];
-        }
-
-        const mappedRecipes =
-            cloudRecipes.map(recipe =>
-                mapCloudRecipeToLocal(
-                    recipe,
-                    cloudItems.filter(
-                        item => item.recipe_id === recipe.id
-                    )
-                )
+            return Array.isArray(parsed) ? parsed : [];
+        } catch (e) {
+            console.warn(
+                `[${VERSION}] No fue posible leer ingredientes legacy.`,
+                e
             );
-
-        window.recipes = mappedRecipes;
-
-        if (typeof window.saveStorageData === 'function') {
-            window.saveStorageData();
+            return [];
         }
+    }
 
-        if (typeof window.renderRecipesGrid === 'function') {
-            window.renderRecipesGrid();
-        }
+    /* ============================================================
+       UUID
+       ============================================================ */
 
-        if (typeof window.renderPOSProducts === 'function') {
-            window.renderPOSProducts();
-        }
+    function isUUID(value) {
+        if (!value || typeof value !== 'string') return false;
 
-        console.log(
-            `HORNO 28: ${mappedRecipes.length} fichas técnicas cargadas desde Supabase.`
+        return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+            value
         );
     }
 
-    // ---------------------------------------------------------
-    // MAPEO SUPABASE -> APLICACIÓN
-    // ---------------------------------------------------------
+    /* ============================================================
+       NORMALIZAR TEXTO
+       ============================================================ */
 
-    function mapCloudRecipeToLocal(recipe, items) {
-
-        return {
-            id: recipe.id,
-
-            name: recipe.name,
-
-            category: recipe.category || '',
-
-            price: Number(recipe.selling_price || 0),
-
-            items: (items || []).map(item => ({
-                ingredientId: item.ingredient_id,
-                quantity: Number(item.quantity || 0)
-            }))
-        };
+    function normalizeText(value) {
+        return String(value || '')
+            .trim()
+            .toLowerCase()
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '');
     }
 
-    // ---------------------------------------------------------
-    // OBTENER INGREDIENTES DE SUPABASE
-    // ---------------------------------------------------------
+    /* ============================================================
+       RESOLVER INGREDIENTE LOCAL -> UUID SUPABASE
+       ============================================================ */
 
-    async function getCloudIngredients() {
+    function resolveIngredientId(localIngredientId, cloudIngredients) {
+
+        if (!localIngredientId) {
+            return null;
+        }
+
+        /* Ya es UUID */
+        if (isUUID(localIngredientId)) {
+            const exists = cloudIngredients.find(
+                ing => ing.id === localIngredientId
+            );
+
+            return exists ? exists.id : null;
+        }
+
+        const currentIngredients = getLocalIngredients();
+        const legacyIngredients = getLegacyIngredients();
+
+        let localIngredient =
+            currentIngredients.find(
+                ing => ing.id === localIngredientId
+            ) || null;
+
+        /* Si no está en la versión actual, buscar en snapshot antiguo */
+        if (!localIngredient) {
+            localIngredient =
+                legacyIngredients.find(
+                    ing => ing.id === localIngredientId
+                ) || null;
+        }
+
+        if (!localIngredient) {
+            console.warn(
+                `[${VERSION}] No se encontró ingrediente local:`,
+                localIngredientId
+            );
+
+            return null;
+        }
+
+        const localName = normalizeText(localIngredient.name);
+
+        if (!localName) {
+            return null;
+        }
+
+        const cloudIngredient = cloudIngredients.find(
+            ing => normalizeText(ing.name) === localName
+        );
+
+        if (!cloudIngredient) {
+            console.warn(
+                `[${VERSION}] No existe ingrediente en Supabase:`,
+                localIngredient.name
+            );
+
+            return null;
+        }
+
+        return cloudIngredient.id;
+    }
+
+    /* ============================================================
+       OBTENER INGREDIENTES CLOUD
+       ============================================================ */
+
+    async function loadCloudIngredients() {
 
         const businessId =
             window.HORNO28_CURRENT_BUSINESS_ID;
@@ -160,9 +178,10 @@
         const { data, error } =
             await window.horno28Supabase
                 .from('ingredients')
-                .select('id, name, unit, active')
+                .select('*')
                 .eq('business_id', businessId)
-                .eq('active', true);
+                .eq('active', true)
+                .order('name');
 
         if (error) {
             throw error;
@@ -171,114 +190,111 @@
         return data || [];
     }
 
-    // ---------------------------------------------------------
-    // RESOLVER INGREDIENTE LOCAL -> UUID SUPABASE
-    // ---------------------------------------------------------
-
-    async function resolveIngredientId(
-        localIngredientId,
-        cloudIngredients
-    ) {
-
-        // Si ya es un UUID, lo utilizamos directamente.
-        if (
-            typeof localIngredientId === 'string' &&
-            /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
-                localIngredientId
-            )
-        ) {
-            return localIngredientId;
-        }
-
-        // Buscar ingrediente local.
-        const localIngredient =
-            Array.isArray(window.ingredients)
-                ? window.ingredients.find(
-                    ingredient =>
-                        ingredient.id === localIngredientId
-                )
-                : null;
-
-        if (!localIngredient) {
-
-            throw new Error(
-                `No se encontró el ingrediente local "${localIngredientId}".`
-            );
-        }
-
-        // Buscar por nombre en Supabase.
-        const match =
-            cloudIngredients.find(
-                ingredient =>
-                    String(ingredient.name || '')
-                        .trim()
-                        .toLowerCase() ===
-                    String(localIngredient.name || '')
-                        .trim()
-                        .toLowerCase()
-            );
-
-        if (!match) {
-
-            throw new Error(
-                `El ingrediente "${localIngredient.name}" ` +
-                `no existe en Supabase. Créalo primero en Insumos y Stock.`
-            );
-        }
-
-        return match.id;
-    }
-
-    // ---------------------------------------------------------
-    // CONVERTIR INGREDIENTES DE UNA RECETA
-    // ---------------------------------------------------------
+    /* ============================================================
+       CONVERTIR ITEMS DE RECETA
+       ============================================================ */
 
     async function convertRecipeItems(recipe) {
 
         const cloudIngredients =
-            await getCloudIngredients();
+            await loadCloudIngredients();
 
-        const convertedItems = [];
+        const sourceItems =
+            Array.isArray(recipe.items)
+                ? recipe.items
+                : [];
 
-        for (const item of recipe.items || []) {
+        const resolved = [];
+
+        for (const item of sourceItems) {
 
             const cloudIngredientId =
-                await resolveIngredientId(
+                resolveIngredientId(
                     item.ingredientId,
                     cloudIngredients
                 );
 
-            convertedItems.push({
+            if (!cloudIngredientId) {
+                console.warn(
+                    `[${VERSION}] Item omitido. Ingrediente no encontrado:`,
+                    item
+                );
+
+                continue;
+            }
+
+            const quantity =
+                Number(item.quantity) || 0;
+
+            if (quantity <= 0) {
+                continue;
+            }
+
+            resolved.push({
                 ingredient_id: cloudIngredientId,
-                quantity: Number(item.quantity || 0),
-                unit: null
+                quantity: quantity,
+                unit: item.unit || null
             });
         }
 
-        return convertedItems;
+        /*
+         * recipe_items tiene:
+         * unique(recipe_id, ingredient_id)
+         *
+         * Por eso combinamos ingredientes repetidos.
+         */
+
+        const grouped = new Map();
+
+        for (const item of resolved) {
+
+            if (!grouped.has(item.ingredient_id)) {
+
+                grouped.set(
+                    item.ingredient_id,
+                    {
+                        ingredient_id: item.ingredient_id,
+                        quantity: item.quantity,
+                        unit: item.unit
+                    }
+                );
+
+            } else {
+
+                const existing =
+                    grouped.get(item.ingredient_id);
+
+                existing.quantity += item.quantity;
+            }
+        }
+
+        return Array.from(grouped.values());
     }
 
-    // ---------------------------------------------------------
-    // CREAR RECETA EN SUPABASE
-    // ---------------------------------------------------------
+    /* ============================================================
+       CREAR RECETA EN SUPABASE
+       ============================================================ */
 
     async function createRecipeInCloud(recipe) {
 
         const businessId =
             window.HORNO28_CURRENT_BUSINESS_ID;
 
-        const { data, error } =
+        const payload = {
+            business_id: businessId,
+            name: recipe.name,
+            category: recipe.category || null,
+            yield_quantity: 1,
+            yield_unit: 'unidad',
+            selling_price: Number(recipe.price) || 0,
+            notes: null,
+            active: true
+        };
+
+        const { data: createdRecipe, error } =
             await window.horno28Supabase
                 .from('recipes')
-                .insert({
-                    business_id: businessId,
-                    name: recipe.name,
-                    category: recipe.category || null,
-                    yield_quantity: 1,
-                    yield_unit: 'unidad',
-                    selling_price: Number(recipe.price || 0),
-                    active: true
-                })
+                .insert(payload)
                 .select()
                 .single();
 
@@ -286,368 +302,533 @@
             throw error;
         }
 
-        const recipeItems =
-            await convertRecipeItems(recipe);
+        try {
 
-        if (recipeItems.length > 0) {
+            const items =
+                await convertRecipeItems(recipe);
 
-            const rows =
-                recipeItems.map(item => ({
-                    recipe_id: data.id,
+            if (items.length > 0) {
+
+                const rows = items.map(item => ({
+                    recipe_id: createdRecipe.id,
                     ingredient_id: item.ingredient_id,
                     quantity: item.quantity,
                     unit: item.unit
                 }));
 
-            const { error: itemsError } =
-                await window.horno28Supabase
-                    .from('recipe_items')
-                    .insert(rows);
+                const { error: itemError } =
+                    await window.horno28Supabase
+                        .from('recipe_items')
+                        .insert(rows);
 
-            if (itemsError) {
-
-                // Evita dejar una receta incompleta.
-                await window.horno28Supabase
-                    .from('recipes')
-                    .delete()
-                    .eq('id', data.id);
-
-                throw itemsError;
+                if (itemError) {
+                    throw itemError;
+                }
             }
-        }
 
-        return data;
-    }
+        } catch (error) {
 
-    // ---------------------------------------------------------
-    // ACTUALIZAR RECETA
-    // ---------------------------------------------------------
+            /*
+             * Si fallan los items eliminamos
+             * la receta creada para no dejar
+             * datos incompletos.
+             */
 
-    async function updateRecipeInCloud(recipeId, recipe) {
-
-        const { error } =
             await window.horno28Supabase
                 .from('recipes')
-                .update({
-                    name: recipe.name,
-                    category: recipe.category || null,
-                    selling_price: Number(recipe.price || 0),
-                    updated_at: new Date().toISOString()
-                })
-                .eq('id', recipeId)
-                .eq(
-                    'business_id',
-                    window.HORNO28_CURRENT_BUSINESS_ID
-                );
+                .delete()
+                .eq('id', createdRecipe.id);
+
+            throw error;
+        }
+
+        console.log(
+            `[${VERSION}] Receta creada en Supabase:`,
+            createdRecipe.id
+        );
+
+        return createdRecipe;
+    }
+
+    /* ============================================================
+       ACTUALIZAR RECETA EN SUPABASE
+       ============================================================ */
+
+    async function updateRecipeInCloud(recipe) {
+
+        if (!isUUID(recipe.id)) {
+            return createRecipeInCloud(recipe);
+        }
+
+        const recipePayload = {
+            name: recipe.name,
+            category: recipe.category || null,
+            selling_price: Number(recipe.price) || 0
+        };
+
+        const { data: updatedRecipe, error } =
+            await window.horno28Supabase
+                .from('recipes')
+                .update(recipePayload)
+                .eq('id', recipe.id)
+                .select()
+                .single();
 
         if (error) {
             throw error;
         }
 
-        const recipeItems =
+        await window.horno28Supabase
+            .from('recipe_items')
+            .delete()
+            .eq('recipe_id', recipe.id);
+
+        const items =
             await convertRecipeItems(recipe);
 
-        // Eliminar ingredientes anteriores.
-        const { error: deleteError } =
-            await window.horno28Supabase
-                .from('recipe_items')
-                .delete()
-                .eq('recipe_id', recipeId);
+        if (items.length > 0) {
 
-        if (deleteError) {
-            throw deleteError;
-        }
+            const rows = items.map(item => ({
+                recipe_id: recipe.id,
+                ingredient_id: item.ingredient_id,
+                quantity: item.quantity,
+                unit: item.unit
+            }));
 
-        if (recipeItems.length > 0) {
-
-            const rows =
-                recipeItems.map(item => ({
-                    recipe_id: recipeId,
-                    ingredient_id: item.ingredient_id,
-                    quantity: item.quantity,
-                    unit: item.unit
-                }));
-
-            const { error: insertError } =
+            const { error: itemError } =
                 await window.horno28Supabase
                     .from('recipe_items')
                     .insert(rows);
 
-            if (insertError) {
-                throw insertError;
+            if (itemError) {
+                throw itemError;
             }
         }
+
+        console.log(
+            `[${VERSION}] Receta actualizada:`,
+            recipe.id
+        );
+
+        return updatedRecipe;
     }
 
-    // ---------------------------------------------------------
-    // ELIMINAR RECETA
-    // ---------------------------------------------------------
+    /* ============================================================
+       ELIMINAR RECETA DE SUPABASE
+       ============================================================ */
 
     async function deleteRecipeFromCloud(recipeId) {
 
+        if (!isUUID(recipeId)) {
+            return;
+        }
+
         const { error } =
             await window.horno28Supabase
                 .from('recipes')
                 .delete()
-                .eq('id', recipeId)
-                .eq(
-                    'business_id',
-                    window.HORNO28_CURRENT_BUSINESS_ID
-                );
+                .eq('id', recipeId);
 
         if (error) {
             throw error;
         }
+
+        console.log(
+            `[${VERSION}] Receta eliminada:`,
+            recipeId
+        );
     }
 
-    // ---------------------------------------------------------
-    // MIGRAR RECETAS LOCALES
-    // ---------------------------------------------------------
+    /* ============================================================
+       CARGAR RECETAS CLOUD
+       ============================================================ */
 
-    async function migrateLocalRecipes(localRecipes) {
+    async function loadCloudRecipes() {
 
-        let migrated = 0;
-        let skipped = 0;
-        const problems = [];
+        const businessId =
+            window.HORNO28_CURRENT_BUSINESS_ID;
 
-        for (const recipe of localRecipes) {
+        const { data: cloudRecipes, error } =
+            await window.horno28Supabase
+                .from('recipes')
+                .select(`
+                    *,
+                    recipe_items (
+                        id,
+                        ingredient_id,
+                        quantity,
+                        unit
+                    )
+                `)
+                .eq('business_id', businessId)
+                .eq('active', true)
+                .order('name');
+
+        if (error) {
+            throw error;
+        }
+
+        const mappedRecipes =
+            (cloudRecipes || []).map(recipe => {
+
+                return {
+                    id: recipe.id,
+                    name: recipe.name,
+                    category: recipe.category || '',
+                    price: Number(recipe.selling_price) || 0,
+
+                    items:
+                        (recipe.recipe_items || []).map(item => ({
+                            ingredientId: item.ingredient_id,
+                            quantity: Number(item.quantity) || 0,
+                            unit: item.unit || ''
+                        }))
+                };
+            });
+
+        try {
+            recipes = mappedRecipes;
+        } catch (e) {
+            console.error(
+                `[${VERSION}] No se pudo actualizar recipes.`,
+                e
+            );
+        }
+
+        if (typeof saveStorageData === 'function') {
+            saveStorageData();
+        }
+
+        if (typeof renderRecipesGrid === 'function') {
+            renderRecipesGrid();
+        }
+
+        if (typeof renderPOSProducts === 'function') {
+            renderPOSProducts();
+        }
+
+        console.log(
+            `[${VERSION}] Recetas cargadas desde Supabase:`,
+            mappedRecipes.length
+        );
+
+        return mappedRecipes;
+    }
+
+    /* ============================================================
+       MIGRAR RECETAS LOCALES
+       ============================================================ */
+
+    async function migrateLocalRecipes() {
+
+        const localRecipes =
+            getLocalRecipes().filter(
+                recipe => !isUUID(recipe.id)
+            );
+
+        if (!localRecipes.length) {
+            return;
+        }
+
+        console.log(
+            `[${VERSION}] Recetas locales pendientes de migración:`,
+            localRecipes.length
+        );
+
+        for (const localRecipe of localRecipes) {
 
             try {
 
-                // No intentar migrar recetas que ya tengan UUID.
-                const isAlreadyCloud =
-                    typeof recipe.id === 'string' &&
-                    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
-                        recipe.id
-                    );
+                const cloudRecipe =
+                    await createRecipeInCloud(localRecipe);
 
-                if (isAlreadyCloud) {
-                    continue;
-                }
+                /*
+                 * Reemplazamos el ID local por el UUID real.
+                 */
 
-                await createRecipeInCloud(recipe);
+                localRecipe.id =
+                    cloudRecipe.id;
 
-                migrated++;
+                console.log(
+                    `[${VERSION}] Migrada:`,
+                    localRecipe.name
+                );
 
             } catch (error) {
 
-                skipped++;
-
-                problems.push(
-                    `${recipe.name}: ${error.message}`
-                );
-
                 console.error(
-                    `Error migrando "${recipe.name}":`,
+                    `[${VERSION}] Error migrando receta:`,
+                    localRecipe.name,
                     error
                 );
             }
         }
 
-        // Recargar desde Supabase si al menos una migró.
-        if (migrated > 0) {
-            await loadRecipesFromCloud();
+        if (typeof saveStorageData === 'function') {
+            saveStorageData();
         }
 
-        let message =
-            `Migración de fichas técnicas finalizada.\n\n` +
-            `Migradas: ${migrated}\n` +
-            `No migradas: ${skipped}`;
-
-        if (problems.length > 0) {
-
-            message +=
-                `\n\nProblemas encontrados:\n\n` +
-                problems.join('\n');
+        if (typeof renderRecipesGrid === 'function') {
+            renderRecipesGrid();
         }
 
-        alert(message);
+        if (typeof renderPOSProducts === 'function') {
+            renderPOSProducts();
+        }
     }
 
-    // ---------------------------------------------------------
-    // SINCRONIZACIÓN DESPUÉS DE GUARDAR
-    // ---------------------------------------------------------
+    /* ============================================================
+       WRAPPER SAVE RECIPE
+       ============================================================ */
 
-    async function syncRecipeAfterSave(recipe) {
+    const originalSaveRecipe =
+        window.saveRecipe;
 
-        if (!recipe) return;
+    window.saveRecipe = async function () {
 
-        const isCloudId =
-            typeof recipe.id === 'string' &&
-            /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
-                recipe.id
+        const before =
+            getLocalRecipes().map(recipe => ({
+                id: recipe.id,
+                snapshot: JSON.stringify(recipe)
+            }));
+
+        /*
+         * Ejecutar primero la función original.
+         */
+        const result =
+            await originalSaveRecipe.apply(this, arguments);
+
+        /*
+         * Dar tiempo al app para actualizar
+         * su variable recipes.
+         */
+        await new Promise(resolve =>
+            setTimeout(resolve, 50)
+        );
+
+        const after =
+            getLocalRecipes();
+
+        if (!after.length) {
+            return result;
+        }
+
+        let changedRecipe = null;
+
+        /*
+         * Primero buscar receta nueva.
+         */
+        changedRecipe =
+            after.find(recipe =>
+                !before.some(
+                    old => old.id === recipe.id
+                )
             );
+
+        /*
+         * Si no hay nueva, buscar receta modificada.
+         */
+        if (!changedRecipe) {
+
+            changedRecipe =
+                after.find(recipe => {
+
+                    const old =
+                        before.find(
+                            item => item.id === recipe.id
+                        );
+
+                    if (!old) return false;
+
+                    return (
+                        old.snapshot !==
+                        JSON.stringify(recipe)
+                    );
+                });
+        }
+
+        /*
+         * Como fallback, usar la última receta.
+         */
+        if (!changedRecipe) {
+            changedRecipe =
+                after[after.length - 1];
+        }
+
+        if (!changedRecipe) {
+            return result;
+        }
 
         try {
 
-            if (isCloudId) {
+            let cloudRecipe;
 
-                await updateRecipeInCloud(
-                    recipe.id,
-                    recipe
-                );
+            if (isUUID(changedRecipe.id)) {
+
+                cloudRecipe =
+                    await updateRecipeInCloud(
+                        changedRecipe
+                    );
 
             } else {
 
-                const created =
-                    await createRecipeInCloud(recipe);
+                cloudRecipe =
+                    await createRecipeInCloud(
+                        changedRecipe
+                    );
 
-                // Reemplazar ID local por UUID de Supabase.
-                recipe.id = created.id;
+                /*
+                 * Convertir definitivamente
+                 * el ID local al UUID de Supabase.
+                 */
 
-                if (typeof window.saveStorageData === 'function') {
-                    window.saveStorageData();
+                changedRecipe.id =
+                    cloudRecipe.id;
+
+                if (typeof saveStorageData === 'function') {
+                    saveStorageData();
                 }
             }
 
             console.log(
-                'HORNO 28: ficha técnica sincronizada correctamente.'
+                `[${VERSION}] SAVE sincronizado correctamente.`,
+                cloudRecipe.id
             );
 
         } catch (error) {
 
             console.error(
-                'HORNO 28 - Error sincronizando ficha:',
+                `[${VERSION}] Error sincronizando receta:`,
                 error
             );
 
             alert(
-                'La ficha técnica se guardó localmente, ' +
-                'pero no pudo sincronizarse con Supabase.\n\n' +
-                error.message
+                'La ficha técnica se guardó localmente, pero ocurrió un problema al sincronizarla con Supabase.\n\n' +
+                (error?.message || error)
             );
         }
-    }
 
-    // ---------------------------------------------------------
-    // INSTALAR WRAPPERS
-    // ---------------------------------------------------------
+        return result;
+    };
 
-    function installRecipeWrappers() {
+    /* ============================================================
+       WRAPPER DELETE RECIPE
+       ============================================================ */
 
-        if (window.HORNO28_RECIPES_WRAPPED) {
-            return;
-        }
+    const originalDeleteRecipe =
+        window.deleteRecipe;
 
-        window.HORNO28_RECIPES_WRAPPED = true;
+    window.deleteRecipe = async function (id) {
 
-        const originalSaveRecipe =
-            window.saveRecipe;
+        let cloudId = id;
 
-        const originalDeleteRecipe =
-            window.deleteRecipe;
-
-        // ---------------------------
-        // GUARDAR
-        // ---------------------------
-
-        window.saveRecipe = async function () {
-
-            const previousRecipes =
-                Array.isArray(window.recipes)
-                    ? window.recipes.map(r => ({ ...r }))
-                    : [];
-
-            // Ejecutar función original.
-            const result =
-                originalSaveRecipe.apply(this, arguments);
-
-            // Esperar a que el DOM/localStorage termine.
-            await new Promise(resolve =>
-                setTimeout(resolve, 100)
+        /*
+         * Ejecutar primero la eliminación local.
+         */
+        const result =
+            await originalDeleteRecipe.apply(
+                this,
+                arguments
             );
 
-            const currentRecipes =
-                Array.isArray(window.recipes)
-                    ? window.recipes
-                    : [];
-
-            // Encontrar la receta que acaba de cambiar.
-            let changedRecipe = null;
-
-            if (currentRecipes.length > 0) {
-
-                // Comparar por nombre/precio/items.
-                changedRecipe =
-                    currentRecipes[
-                        currentRecipes.length - 1
-                    ];
-
-                // Si encontramos una receta cuyo ID ya existía,
-                // buscar específicamente esa.
-                const previousIds =
-                    new Set(
-                        previousRecipes.map(r => r.id)
-                    );
-
-                const newRecipe =
-                    currentRecipes.find(
-                        r => !previousIds.has(r.id)
-                    );
-
-                if (newRecipe) {
-                    changedRecipe = newRecipe;
-                }
-            }
-
-            if (changedRecipe) {
-
-                // No bloquear la interfaz.
-                setTimeout(() => {
-                    syncRecipeAfterSave(changedRecipe);
-                }, 50);
-            }
-
+        if (!isUUID(cloudId)) {
             return result;
-        };
+        }
 
-        // ---------------------------
-        // ELIMINAR
-        // ---------------------------
+        try {
 
-        window.deleteRecipe = async function (id) {
+            await deleteRecipeFromCloud(cloudId);
 
-            const result =
-                originalDeleteRecipe.apply(
-                    this,
-                    arguments
+        } catch (error) {
+
+            console.error(
+                `[${VERSION}] Error eliminando receta cloud:`,
+                error
+            );
+
+            alert(
+                'La receta fue eliminada localmente, pero ocurrió un problema al eliminarla de Supabase.\n\n' +
+                (error?.message || error)
+            );
+        }
+
+        return result;
+    };
+
+    /* ============================================================
+       INICIALIZACIÓN
+       ============================================================ */
+
+    async function initializeRecipesCloud() {
+
+        console.log(
+            `[${VERSION}] Inicializando sincronización...`
+        );
+
+        try {
+
+            const cloudRecipes =
+                await loadCloudRecipes();
+
+            const localRecipes =
+                getLocalRecipes();
+
+            /*
+             * Si Supabase tiene recetas:
+             * Supabase es la fuente principal.
+             */
+            if (cloudRecipes.length > 0) {
+
+                console.log(
+                    `[${VERSION}] Supabase contiene recetas.`
                 );
 
-            const isCloudId =
-                typeof id === 'string' &&
-                /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
-                    id
-                );
+                return;
+            }
 
-            if (isCloudId) {
+            /*
+             * Si Supabase está vacío pero hay recetas
+             * locales, migrarlas automáticamente.
+             *
+             * Esto evita perder las fichas existentes.
+             */
+            if (localRecipes.length > 0) {
 
-                try {
+                const shouldMigrate =
+                    confirm(
+                        'HORNO 28 encontró fichas técnicas locales que todavía no están en Supabase.\n\n' +
+                        '¿Deseas migrarlas ahora a la base de datos central?'
+                    );
 
-                    await deleteRecipeFromCloud(id);
+                if (shouldMigrate) {
+
+                    await migrateLocalRecipes();
+
+                } else {
 
                     console.log(
-                        'HORNO 28: ficha eliminada de Supabase.'
-                    );
-
-                } catch (error) {
-
-                    console.error(
-                        'Error eliminando ficha de Supabase:',
-                        error
-                    );
-
-                    alert(
-                        'La ficha fue eliminada localmente, ' +
-                        'pero ocurrió un error al eliminarla de Supabase.\n\n' +
-                        error.message
+                        `[${VERSION}] Migración local cancelada por el usuario.`
                     );
                 }
             }
 
-            return result;
-        };
+        } catch (error) {
+
+            console.error(
+                `[${VERSION}] Error inicializando recetas:`,
+                error
+            );
+        }
     }
 
-    waitForDependencies();
+    /* ============================================================
+       ARRANQUE
+       ============================================================ */
+
+    waitForDependencies(() => {
+
+        initializeRecipesCloud();
+
+    });
 
 })();
