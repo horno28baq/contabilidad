@@ -9,7 +9,7 @@
 
   function ready() {
     return (
-      window.supabase &&
+      window.horno28Supabase &&
       window.HORNO28_CURRENT_BUSINESS_ID &&
       typeof transactions !== 'undefined'
     );
@@ -18,7 +18,7 @@
   async function loadTransactions() {
     if (!ready()) return false;
 
-    const { data, error } = await window.supabase
+const { data, error } = await window.horno28Supabase
       .from('cash_transactions')
       .select('*')
       .eq('business_id', window.HORNO28_CURRENT_BUSINESS_ID)
@@ -485,7 +485,7 @@
     const {
       data,
       error
-    } = await window.supabase
+    } = await window.horno28Supabase
 
       .from('cash_transactions')
 
@@ -617,7 +617,7 @@
 
     const {
       error
-    } = await window.supabase
+    } = await window.horno28Supabase
 
       .from('cash_transactions')
 
@@ -837,7 +837,7 @@
   async function init() {
 
     if (
-      !window.supabase ||
+      !window.horno28Supabase ||
       !window.HORNO28_CURRENT_BUSINESS_ID
     ) {
 
