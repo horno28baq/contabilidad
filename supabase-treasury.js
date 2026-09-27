@@ -92,7 +92,7 @@ const { data, error } = await window.horno28Supabase
       panel.dataset.initialized = '1';
 
       panel.innerHTML = `
-        <div class="bg-white rounded-xl shadow p-4 mb-4">
+        <div class="bg-carbon rounded-2xl border border-carbonBorder shadow-xl p-5 mb-4 text-white">
 
           <div class="flex flex-wrap gap-2 items-center">
 
@@ -102,21 +102,21 @@ const { data, error } = await window.horno28Supabase
 
             <button
               type="button"
-              class="px-3 py-2 rounded bg-slate-200"
+              class="px-3 py-2 rounded-lg bg-asphalt border border-carbonBorder text-gray-300 hover:text-white hover:border-f1Red transition"
               data-h28-filter="day">
               Día
             </button>
 
             <button
               type="button"
-              class="px-3 py-2 rounded bg-slate-200"
+              class="px-3 py-2 rounded-lg bg-asphalt border border-carbonBorder text-gray-300 hover:text-white hover:border-f1Red transition"
               data-h28-filter="month">
               Mes
             </button>
 
             <button
               type="button"
-              class="px-3 py-2 rounded bg-slate-200"
+              class="px-3 py-2 rounded-lg bg-asphalt border border-carbonBorder text-gray-300 hover:text-white hover:border-f1Red transition"
               data-h28-filter="all">
               Todos
             </button>
@@ -132,7 +132,7 @@ const { data, error } = await window.horno28Supabase
 
             <table class="min-w-full text-sm">
 
-              <thead>
+              <thead class="bg-asphalt">
 
                 <tr class="border-b">
 
@@ -274,9 +274,9 @@ const { data, error } = await window.horno28Supabase
 
       summary.innerHTML = `
 
-        <div class="rounded-lg bg-slate-100 p-3">
+        <div class="rounded-xl bg-asphalt border border-carbonBorder p-4">
 
-          <small>
+          <small class="text-gray-400 uppercase tracking-wider text-xs font-bold">
             Ingresos
           </small>
 
@@ -286,9 +286,9 @@ const { data, error } = await window.horno28Supabase
 
         </div>
 
-        <div class="rounded-lg bg-slate-100 p-3">
+        <div class="rounded-xl bg-asphalt border border-carbonBorder p-4">
 
-          <small>
+          <small class="text-gray-400 uppercase tracking-wider text-xs font-bold">
             Egresos
           </small>
 
@@ -298,9 +298,9 @@ const { data, error } = await window.horno28Supabase
 
         </div>
 
-        <div class="rounded-lg bg-slate-100 p-3">
+        <div class="rounded-xl bg-asphalt border border-carbonBorder p-4">
 
-          <small>
+          <small class="text-gray-400 uppercase tracking-wider text-xs font-bold">
             Balance
           </small>
 
@@ -310,9 +310,9 @@ const { data, error } = await window.horno28Supabase
 
         </div>
 
-        <div class="rounded-lg bg-slate-100 p-3">
+        <div class="rounded-xl bg-asphalt border border-carbonBorder p-4">
 
-          <small>
+          <small class="text-gray-400 uppercase tracking-wider text-xs font-bold">
             Movimientos
           </small>
 
