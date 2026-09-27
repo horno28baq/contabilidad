@@ -1,885 +1,1946 @@
-/* H28-TREASURY-CLOUD-v1
-   ETAPA 4 — CAJA Y TESORERÍA + LIBRO DIARIO
-*/
+/* ============================================================
+   HORNO 28 — CAJA Y TESORERÍA / LIBRO DIARIO
+   ============================================================ */
 
 (function () {
-  'use strict';
 
-  const TAG = '[H28-TREASURY-CLOUD-v1]';
+    'use strict';
 
-  function ready() {
-    return (
-      window.horno28Supabase &&
-      window.HORNO28_CURRENT_BUSINESS_ID &&
-      typeof transactions !== 'undefined'
-    );
-  }
+    const TAG = '[H28-TREASURY]';
 
-  async function loadTransactions() {
-    if (!ready()) return false;
+    let treasuryTransactions = [];
+    let currentLedgerFilter = 'day';
 
-const { data, error } = await window.horno28Supabase
-      .from('cash_transactions')
-      .select('*')
-      .eq('business_id', window.HORNO28_CURRENT_BUSINESS_ID)
-      .order('transaction_date', { ascending: false });
+    /* ============================================================
+       UTILIDADES
+       ============================================================ */
 
-    if (error) {
-      console.error(TAG, error);
-      return false;
+    function getSupabase() {
+        return window.horno28Supabase || null;
     }
 
-    transactions.length = 0;
-
-    (data || []).forEach(row => {
-      transactions.push({
-        id: row.id,
-        date: row.transaction_date,
-        type: row.type,
-        concept: row.description,
-        amount: Number(row.amount || 0),
-        category: row.category,
-        paymentMethod: row.payment_method,
-        reference: row.reference || '',
-        notes: row.notes || '',
-        saleId: row.sale_id || null
-      });
-    });
-
-    try {
-      localStorage.setItem(
-        'h28_transactions',
-        JSON.stringify(transactions)
-      );
-    } catch (_) {}
-
-    renderLedger();
-
-    console.log(
-      TAG,
-      'Movimientos cargados:',
-      transactions.length
-    );
-
-    return true;
-  }
-
-  function renderLedger() {
-    const tab = document.getElementById('tab-treasury');
-
-    if (!tab) return;
-
-    let panel = document.getElementById('h28-cloud-ledger');
-
-    if (!panel) {
-      panel = document.createElement('div');
-      panel.id = 'h28-cloud-ledger';
-      panel.className = 'mt-4';
-
-      tab.prepend(panel);
+    function getBusinessId() {
+        return window.HORNO28_CURRENT_BUSINESS_ID || null;
     }
 
-    const now = new Date();
+    function money(value) {
+        const number = Number(value || 0);
 
-    const currentDay =
-      now.toISOString().slice(0, 10);
+        return new Intl.NumberFormat('es-CO', {
+            style: 'currency',
+            currency: 'COP',
+            maximumFractionDigits: 0
+        }).format(number);
+    }
 
-    const currentMonth =
-      currentDay.slice(0, 7);
+    function escapeHtml(value) {
 
-    if (!panel.dataset.initialized) {
+        return String(value ?? '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
 
-      panel.dataset.initialized = '1';
+    }
 
-      panel.innerHTML = `
-        <div class="bg-carbon rounded-2xl border border-carbonBorder shadow-xl p-5 mb-4 text-white">
+    function formatDate(dateValue) {
 
-          <div class="flex flex-wrap gap-2 items-center">
+        if (!dateValue) return '-';
 
-            <strong class="mr-2">
-              LIBRO DIARIO
-            </strong>
+        const date = new Date(dateValue);
 
-            <button
-              type="button"
-              class="px-3 py-2 rounded-lg bg-asphalt border border-carbonBorder text-gray-300 hover:text-white hover:border-f1Red transition"
-              data-h28-filter="day">
-              Día
-            </button>
+        if (isNaN(date.getTime())) return '-';
 
-            <button
-              type="button"
-              class="px-3 py-2 rounded-lg bg-asphalt border border-carbonBorder text-gray-300 hover:text-white hover:border-f1Red transition"
-              data-h28-filter="month">
-              Mes
-            </button>
+        return date.toLocaleDateString('es-CO', {
+            day: '2-digit',
+            month: '2-digit',
+            year: 'numeric'
+        });
 
-            <button
-              type="button"
-              class="px-3 py-2 rounded-lg bg-asphalt border border-carbonBorder text-gray-300 hover:text-white hover:border-f1Red transition"
-              data-h28-filter="all">
-              Todos
-            </button>
+    }
 
-          </div>
+    function formatTime(dateValue) {
 
-          <div
-            id="h28-ledger-summary"
-            class="grid grid-cols-1 md:grid-cols-4 gap-3 mt-4">
-          </div>
+        if (!dateValue) return '';
 
-          <div class="overflow-x-auto mt-4">
+        const date = new Date(dateValue);
 
-            <table class="min-w-full text-sm">
+        if (isNaN(date.getTime())) return '';
 
-              <thead class="bg-asphalt">
+        return date.toLocaleTimeString('es-CO', {
+            hour: '2-digit',
+            minute: '2-digit'
+        });
 
-                <tr class="border-b">
+    }
 
-                  <th class="text-left p-2">
-                    Fecha
-                  </th>
+    function getTransactionDate(transaction) {
 
-                  <th class="text-left p-2">
-                    Origen
-                  </th>
+        return transaction.transaction_date ||
+               transaction.date ||
+               transaction.created_at ||
+               null;
 
-                  <th class="text-left p-2">
-                    Tipo
-                  </th>
+    }
 
-                  <th class="text-left p-2">
-                    Concepto
-                  </th>
+    /* ============================================================
+       FILTROS DE FECHA
+       ============================================================ */
 
-                  <th class="text-left p-2">
-                    Categoría
-                  </th>
+    function isToday(dateValue) {
 
-                  <th class="text-left p-2">
-                    Pago
-                  </th>
+        if (!dateValue) return false;
 
-                  <th class="text-right p-2">
-                    Valor
-                  </th>
+        const date = new Date(dateValue);
+        const now = new Date();
 
-                  <th class="text-center p-2">
-                    Acción
-                  </th>
+        return (
+            date.getFullYear() === now.getFullYear() &&
+            date.getMonth() === now.getMonth() &&
+            date.getDate() === now.getDate()
+        );
 
-                </tr>
+    }
 
-              </thead>
+    function isThisMonth(dateValue) {
 
-              <tbody id="h28-ledger-body">
-              </tbody>
+        if (!dateValue) return false;
 
-            </table>
+        const date = new Date(dateValue);
+        const now = new Date();
 
-          </div>
+        return (
+            date.getFullYear() === now.getFullYear() &&
+            date.getMonth() === now.getMonth()
+        );
 
-        </div>
-      `;
+    }
 
-      panel
-        .querySelectorAll('[data-h28-filter]')
-        .forEach(btn => {
+    function getFilteredTransactions() {
 
-          btn.addEventListener(
-            'click',
-            () => {
+        if (currentLedgerFilter === 'day') {
 
-              panel.dataset.filter =
-                btn.dataset.h28Filter;
+            return treasuryTransactions.filter(function (transaction) {
+                return isToday(getTransactionDate(transaction));
+            });
 
-              renderLedger();
+        }
+
+        if (currentLedgerFilter === 'month') {
+
+            return treasuryTransactions.filter(function (transaction) {
+                return isThisMonth(getTransactionDate(transaction));
+            });
+
+        }
+
+        return [...treasuryTransactions];
+
+    }
+
+    /* ============================================================
+       CARGAR MOVIMIENTOS DESDE SUPABASE
+       ============================================================ */
+
+    async function loadTransactions() {
+
+        const supabase = getSupabase();
+        const businessId = getBusinessId();
+
+        if (!supabase) {
+            console.warn(
+                TAG,
+                'Supabase todavía no está disponible.'
+            );
+            return;
+        }
+
+        if (!businessId) {
+            console.warn(
+                TAG,
+                'No existe HORNO28_CURRENT_BUSINESS_ID.'
+            );
+            return;
+        }
+
+        console.log(
+            TAG,
+            'Cargando movimientos del negocio:',
+            businessId
+        );
+
+        const { data, error } = await supabase
+            .from('cash_transactions')
+            .select('*')
+            .eq('business_id', businessId)
+            .order('transaction_date', {
+                ascending: false
+            });
+
+        if (error) {
+
+            console.error(
+                TAG,
+                'Error cargando movimientos:',
+                error
+            );
+
+            return;
+        }
+
+        treasuryTransactions = Array.isArray(data)
+            ? data
+            : [];
+
+        /*
+           Mantener también una representación compatible
+           con la variable transactions de la aplicación.
+        */
+
+        try {
+
+            if (typeof transactions !== 'undefined') {
+
+                transactions.length = 0;
+
+                treasuryTransactions.forEach(function (row) {
+
+                    transactions.push({
+                        id: row.id,
+                        date: row.transaction_date,
+                        type: row.type,
+                        concept: row.description,
+                        amount: Number(row.amount || 0),
+                        paymentMethod: row.payment_method,
+                        category: row.category,
+                        reference: row.reference,
+                        notes: row.notes,
+                        saleId: row.sale_id
+                    });
+
+                });
 
             }
-          );
+
+        } catch (e) {
+
+            console.warn(
+                TAG,
+                'No fue posible sincronizar transactions local.',
+                e
+            );
+
+        }
+
+        renderLedger();
+
+        console.log(
+            TAG,
+            'Movimientos cargados:',
+            treasuryTransactions.length
+        );
+
+    }
+
+    /* ============================================================
+       RESUMEN
+       ============================================================ */
+
+    function calculateSummary(rows) {
+
+        let income = 0;
+        let expense = 0;
+
+        rows.forEach(function (row) {
+
+            const amount = Number(row.amount || 0);
+
+            if (row.type === 'income') {
+                income += amount;
+            }
+
+            if (row.type === 'expense') {
+                expense += amount;
+            }
 
         });
 
-      panel.dataset.filter = 'day';
+        return {
+            income,
+            expense,
+            balance: income - expense,
+            count: rows.length
+        };
+
     }
 
-    const filter =
-      panel.dataset.filter || 'day';
+    /* ============================================================
+       BOTONES DE FILTRO
+       ============================================================ */
 
-    const rows = transactions.filter(t => {
+    function filterButton(label, filter) {
 
-      if (!t.date) {
-        return filter === 'all';
-      }
+        const active = currentLedgerFilter === filter;
 
-      const d = new Date(t.date);
+        return `
+            <button
+                type="button"
+                onclick="HORNO28_SET_LEDGER_FILTER('${filter}')"
+                class="
+                    px-4 py-2
+                    rounded-lg
+                    text-xs
+                    font-bold
+                    uppercase
+                    tracking-wider
+                    transition-all
+                    border
+                    ${
+                        active
+                            ? 'bg-f1Red text-white border-f1Red shadow-lg'
+                            : 'bg-asphalt text-gray-400 border-carbonBorder hover:text-white hover:border-f1Red'
+                    }
+                "
+            >
+                ${label}
+            </button>
+        `;
 
-      const ds =
-        d.toISOString().slice(0, 10);
+    }
 
-      const ms =
-        ds.slice(0, 7);
+    /* ============================================================
+       RENDER LIBRO DIARIO
+       ============================================================ */
 
-      return (
-        filter === 'all' ||
-        (
-          filter === 'day' &&
-          ds === currentDay
-        ) ||
-        (
-          filter === 'month' &&
-          ms === currentMonth
-        )
-      );
+    function renderLedger() {
 
-    });
+        const tab = document.getElementById('tab-treasury');
 
-    const income =
-      rows
-        .filter(t => t.type === 'income')
-        .reduce(
-          (s, t) =>
-            s + Number(t.amount || 0),
-          0
-        );
-
-    const expense =
-      rows
-        .filter(t => t.type === 'expense')
-        .reduce(
-          (s, t) =>
-            s + Number(t.amount || 0),
-          0
-        );
-
-    const balance =
-      income - expense;
-
-    const money = n =>
-      Number(n || 0).toLocaleString(
-        'es-CO',
-        {
-          style: 'currency',
-          currency: 'COP',
-          maximumFractionDigits: 0
+        if (!tab) {
+            console.warn(
+                TAG,
+                'No se encontró #tab-treasury.'
+            );
+            return;
         }
-      );
 
-    const summary =
-      document.getElementById(
-        'h28-ledger-summary'
-      );
+        let panel = document.getElementById(
+            'h28-cloud-ledger'
+        );
 
-    if (summary) {
+        if (!panel) {
 
-      summary.innerHTML = `
+            panel = document.createElement('div');
 
-        <div class="rounded-xl bg-asphalt border border-carbonBorder p-4">
+            panel.id = 'h28-cloud-ledger';
 
-          <small class="text-gray-400 uppercase tracking-wider text-xs font-bold">
-            Ingresos
-          </small>
+            /*
+               Lo colocamos al comienzo de Caja/Tesorería,
+               antes del contenido original.
+            */
 
-          <div class="font-bold">
-            ${money(income)}
-          </div>
+            tab.insertBefore(
+                panel,
+                tab.firstElementChild
+            );
 
-        </div>
+        }
 
-        <div class="rounded-xl bg-asphalt border border-carbonBorder p-4">
+        const rows = getFilteredTransactions();
 
-          <small class="text-gray-400 uppercase tracking-wider text-xs font-bold">
-            Egresos
-          </small>
+        const summary = calculateSummary(rows);
 
-          <div class="font-bold">
-            ${money(expense)}
-          </div>
+        panel.innerHTML = `
 
-        </div>
+            <!-- ==================================================
+                 HORNO 28 — LIBRO DIARIO
+                 ================================================== -->
 
-        <div class="rounded-xl bg-asphalt border border-carbonBorder p-4">
+            <div class="
+                bg-carbon
+                rounded-2xl
+                border
+                border-carbonBorder
+                shadow-2xl
+                p-5
+                mb-6
+                text-white
+            ">
 
-          <small class="text-gray-400 uppercase tracking-wider text-xs font-bold">
-            Balance
-          </small>
+                <!-- HEADER -->
 
-          <div class="font-bold">
-            ${money(balance)}
-          </div>
+                <div class="
+                    flex
+                    flex-col
+                    lg:flex-row
+                    lg:items-center
+                    lg:justify-between
+                    gap-4
+                ">
 
-        </div>
+                    <div>
 
-        <div class="rounded-xl bg-asphalt border border-carbonBorder p-4">
+                        <div class="
+                            flex
+                            items-center
+                            gap-3
+                        ">
 
-          <small class="text-gray-400 uppercase tracking-wider text-xs font-bold">
-            Movimientos
-          </small>
+                            <div class="
+                                w-11
+                                h-11
+                                rounded-xl
+                                bg-f1Red
+                                flex
+                                items-center
+                                justify-center
+                                shadow-lg
+                            ">
 
-          <div class="font-bold">
-            ${rows.length}
-          </div>
+                                <i class="
+                                    fa-solid
+                                    fa-book-open
+                                    text-white
+                                    text-lg
+                                "></i>
 
-        </div>
+                            </div>
 
-      `;
+                            <div>
+
+                                <h2 class="
+                                    font-teko
+                                    text-3xl
+                                    sm:text-4xl
+                                    font-extrabold
+                                    tracking-wider
+                                    text-white
+                                    uppercase
+                                    leading-none
+                                ">
+                                    LIBRO <span class="text-f1Red">DIARIO</span>
+                                </h2>
+
+                                <p class="
+                                    text-[10px]
+                                    sm:text-xs
+                                    text-gray-400
+                                    uppercase
+                                    tracking-widest
+                                    mt-1
+                                ">
+                                    INGRESOS · EGRESOS · MOVIMIENTOS · TESORERÍA
+                                </p>
+
+                            </div>
+
+                        </div>
+
+                    </div>
+
+                    <!-- FILTROS -->
+
+                    <div class="
+                        flex
+                        flex-wrap
+                        gap-2
+                    ">
+
+                        ${filterButton('DÍA', 'day')}
+
+                        ${filterButton('MES', 'month')}
+
+                        ${filterButton('TODOS', 'all')}
+
+                    </div>
+
+                </div>
+
+
+                <!-- ==================================================
+                     SUMMARY CARDS
+                     ================================================== -->
+
+                <div class="
+                    grid
+                    grid-cols-1
+                    sm:grid-cols-2
+                    lg:grid-cols-4
+                    gap-3
+                    mt-5
+                ">
+
+                    <!-- INGRESOS -->
+
+                    <div class="
+                        bg-asphalt
+                        border
+                        border-carbonBorder
+                        rounded-xl
+                        p-4
+                    ">
+
+                        <div class="
+                            flex
+                            items-center
+                            justify-between
+                        ">
+
+                            <span class="
+                                text-[10px]
+                                font-bold
+                                uppercase
+                                tracking-widest
+                                text-gray-400
+                            ">
+                                INGRESOS
+                            </span>
+
+                            <i class="
+                                fa-solid
+                                fa-arrow-trend-up
+                                text-telemetryGreen
+                            "></i>
+
+                        </div>
+
+                        <div class="
+                            font-teko
+                            text-3xl
+                            font-extrabold
+                            text-telemetryGreen
+                            mt-1
+                        ">
+                            ${money(summary.income)}
+                        </div>
+
+                    </div>
+
+
+                    <!-- EGRESOS -->
+
+                    <div class="
+                        bg-asphalt
+                        border
+                        border-carbonBorder
+                        rounded-xl
+                        p-4
+                    ">
+
+                        <div class="
+                            flex
+                            items-center
+                            justify-between
+                        ">
+
+                            <span class="
+                                text-[10px]
+                                font-bold
+                                uppercase
+                                tracking-widest
+                                text-gray-400
+                            ">
+                                EGRESOS
+                            </span>
+
+                            <i class="
+                                fa-solid
+                                fa-arrow-trend-down
+                                text-f1Red
+                            "></i>
+
+                        </div>
+
+                        <div class="
+                            font-teko
+                            text-3xl
+                            font-extrabold
+                            text-f1Red
+                            mt-1
+                        ">
+                            ${money(summary.expense)}
+                        </div>
+
+                    </div>
+
+
+                    <!-- BALANCE -->
+
+                    <div class="
+                        bg-asphalt
+                        border
+                        border-carbonBorder
+                        rounded-xl
+                        p-4
+                    ">
+
+                        <div class="
+                            flex
+                            items-center
+                            justify-between
+                        ">
+
+                            <span class="
+                                text-[10px]
+                                font-bold
+                                uppercase
+                                tracking-widest
+                                text-gray-400
+                            ">
+                                BALANCE
+                            </span>
+
+                            <i class="
+                                fa-solid
+                                fa-scale-balanced
+                                text-gold
+                            "></i>
+
+                        </div>
+
+                        <div class="
+                            font-teko
+                            text-3xl
+                            font-extrabold
+                            text-gold
+                            mt-1
+                        ">
+                            ${money(summary.balance)}
+                        </div>
+
+                    </div>
+
+
+                    <!-- MOVIMIENTOS -->
+
+                    <div class="
+                        bg-asphalt
+                        border
+                        border-carbonBorder
+                        rounded-xl
+                        p-4
+                    ">
+
+                        <div class="
+                            flex
+                            items-center
+                            justify-between
+                        ">
+
+                            <span class="
+                                text-[10px]
+                                font-bold
+                                uppercase
+                                tracking-widest
+                                text-gray-400
+                            ">
+                                MOVIMIENTOS
+                            </span>
+
+                            <i class="
+                                fa-solid
+                                fa-list
+                                text-white
+                            "></i>
+
+                        </div>
+
+                        <div class="
+                            font-teko
+                            text-3xl
+                            font-extrabold
+                            text-white
+                            mt-1
+                        ">
+                            ${summary.count}
+                        </div>
+
+                    </div>
+
+                </div>
+
+
+                <!-- ==================================================
+                     TABLA
+                     ================================================== -->
+
+                <div class="
+                    mt-5
+                    overflow-x-auto
+                    rounded-xl
+                    border
+                    border-carbonBorder
+                ">
+
+                    <table class="
+                        min-w-full
+                        text-sm
+                    ">
+
+                        <thead class="
+                            bg-asphalt
+                            text-gray-400
+                            uppercase
+                            text-[10px]
+                            tracking-wider
+                        ">
+
+                            <tr>
+
+                                <th class="p-3 text-left">
+                                    FECHA
+                                </th>
+
+                                <th class="p-3 text-left">
+                                    TIPO
+                                </th>
+
+                                <th class="p-3 text-left">
+                                    CATEGORÍA
+                                </th>
+
+                                <th class="p-3 text-left">
+                                    DESCRIPCIÓN
+                                </th>
+
+                                <th class="p-3 text-left">
+                                    MÉTODO
+                                </th>
+
+                                <th class="p-3 text-right">
+                                    VALOR
+                                </th>
+
+                                <th class="p-3 text-center">
+                                    ORIGEN
+                                </th>
+
+                                <th class="p-3 text-center">
+                                    ACCIÓN
+                                </th>
+
+                            </tr>
+
+                        </thead>
+
+                        <tbody
+                            id="h28-ledger-body"
+                            class="bg-carbon"
+                        >
+
+                            ${
+                                rows.length
+                                    ? rows.map(renderTransactionRow).join('')
+                                    : `
+                                        <tr>
+
+                                            <td
+                                                colspan="8"
+                                                class="
+                                                    p-8
+                                                    text-center
+                                                    text-gray-500
+                                                "
+                                            >
+
+                                                <i class="
+                                                    fa-solid
+                                                    fa-inbox
+                                                    text-3xl
+                                                    mb-3
+                                                    block
+                                                "></i>
+
+                                                NO HAY MOVIMIENTOS
+                                                PARA ESTE PERÍODO
+
+                                            </td>
+
+                                        </tr>
+                                    `
+                            }
+
+                        </tbody>
+
+                    </table>
+
+                </div>
+
+            </div>
+        `;
+
     }
 
-    const body =
-      document.getElementById(
-        'h28-ledger-body'
-      );
+    /* ============================================================
+       FILA DE MOVIMIENTO
+       ============================================================ */
 
-    if (!body) return;
+    function renderTransactionRow(row) {
 
-    body.innerHTML =
-      rows.map(t => `
+        const date = getTransactionDate(row);
 
-        <tr class="border-b">
+        const isIncome = row.type === 'income';
 
-          <td class="p-2">
-            ${new Date(t.date).toLocaleString('es-CO')}
-          </td>
+        const typeLabel = isIncome
+            ? 'INGRESO'
+            : 'EGRESO';
 
-          <td class="p-2">
-            ${t.saleId ? 'POS' : 'Manual'}
-          </td>
+        const typeClass = isIncome
+            ? 'text-telemetryGreen'
+            : 'text-f1Red';
 
-          <td class="p-2">
-            ${
-              t.type === 'income'
-                ? 'Ingreso'
-                : 'Egreso'
+        const typeIcon = isIncome
+            ? 'fa-arrow-up'
+            : 'fa-arrow-down';
+
+        const paymentLabels = {
+            cash: 'EFECTIVO',
+            card: 'TARJETA',
+            transfer: 'TRANSFERENCIA',
+            nequi: 'NEQUI',
+            daviplata: 'DAVIPLATA',
+            other: 'OTRO'
+        };
+
+        const payment = paymentLabels[
+            row.payment_method
+        ] || row.payment_method || '-';
+
+        const isPOS = !!row.sale_id;
+
+        return `
+
+            <tr class="
+                border-t
+                border-carbonBorder
+                hover:bg-carbonLight
+                transition-colors
+            ">
+
+                <!-- FECHA -->
+
+                <td class="
+                    p-3
+                    whitespace-nowrap
+                    text-gray-300
+                ">
+
+                    <div class="font-semibold">
+                        ${formatDate(date)}
+                    </div>
+
+                    <div class="
+                        text-[10px]
+                        text-gray-500
+                    ">
+                        ${formatTime(date)}
+                    </div>
+
+                </td>
+
+
+                <!-- TIPO -->
+
+                <td class="
+                    p-3
+                    whitespace-nowrap
+                ">
+
+                    <span class="
+                        inline-flex
+                        items-center
+                        gap-1.5
+                        ${typeClass}
+                        text-xs
+                        font-bold
+                    ">
+
+                        <i class="
+                            fa-solid
+                            ${typeIcon}
+                        "></i>
+
+                        ${typeLabel}
+
+                    </span>
+
+                </td>
+
+
+                <!-- CATEGORÍA -->
+
+                <td class="
+                    p-3
+                    text-gray-300
+                    whitespace-nowrap
+                ">
+
+                    ${escapeHtml(
+                        row.category || 'GENERAL'
+                    )}
+
+                </td>
+
+
+                <!-- DESCRIPCIÓN -->
+
+                <td class="
+                    p-3
+                    text-gray-200
+                    min-w-[220px]
+                ">
+
+                    <div class="font-semibold">
+
+                        ${escapeHtml(
+                            row.description || '-'
+                        )}
+
+                    </div>
+
+                    ${
+                        row.notes
+                            ? `
+                                <div class="
+                                    text-[10px]
+                                    text-gray-500
+                                    mt-1
+                                ">
+                                    ${escapeHtml(row.notes)}
+                                </div>
+                              `
+                            : ''
+                    }
+
+                </td>
+
+
+                <!-- MÉTODO -->
+
+                <td class="
+                    p-3
+                    text-gray-400
+                    whitespace-nowrap
+                    text-xs
+                ">
+
+                    ${escapeHtml(payment)}
+
+                </td>
+
+
+                <!-- VALOR -->
+
+                <td class="
+                    p-3
+                    text-right
+                    whitespace-nowrap
+                    font-bold
+                    ${typeClass}
+                ">
+
+                    ${isIncome ? '+' : '-'}
+                    ${money(row.amount)}
+
+                </td>
+
+
+                <!-- ORIGEN -->
+
+                <td class="
+                    p-3
+                    text-center
+                    whitespace-nowrap
+                ">
+
+                    ${
+                        isPOS
+                            ? `
+                                <span class="
+                                    inline-flex
+                                    items-center
+                                    gap-1
+                                    px-2
+                                    py-1
+                                    rounded-lg
+                                    bg-f1Red/10
+                                    border
+                                    border-f1Red/30
+                                    text-f1Red
+                                    text-[10px]
+                                    font-bold
+                                ">
+                                    <i class="fa-solid fa-cash-register"></i>
+                                    POS
+                                </span>
+                              `
+                            : `
+                                <span class="
+                                    inline-flex
+                                    items-center
+                                    gap-1
+                                    px-2
+                                    py-1
+                                    rounded-lg
+                                    bg-asphalt
+                                    border
+                                    border-carbonBorder
+                                    text-gray-400
+                                    text-[10px]
+                                    font-bold
+                                ">
+                                    MANUAL
+                                </span>
+                              `
+                    }
+
+                </td>
+
+
+                <!-- ACCIÓN -->
+
+                <td class="
+                    p-3
+                    text-center
+                    whitespace-nowrap
+                ">
+
+                    ${
+                        isPOS
+                            ? `
+                                <button
+                                    type="button"
+                                    onclick="HORNO28_DELETE_SALE('${row.sale_id}')"
+                                    class="
+                                        px-3
+                                        py-1.5
+                                        rounded-lg
+                                        bg-f1Red
+                                        hover:bg-f1RedHover
+                                        text-white
+                                        text-[10px]
+                                        font-bold
+                                        uppercase
+                                        transition-all
+                                        shadow-md
+                                    "
+                                >
+                                    <i class="fa-solid fa-trash mr-1"></i>
+                                    ELIMINAR VENTA
+                                </button>
+                              `
+                            : `
+                                <button
+                                    type="button"
+                                    onclick="HORNO28_DELETE_TRANSACTION('${row.id}')"
+                                    class="
+                                        px-3
+                                        py-1.5
+                                        rounded-lg
+                                        bg-asphalt
+                                        hover:bg-f1Red
+                                        border
+                                        border-carbonBorder
+                                        hover:border-f1Red
+                                        text-gray-300
+                                        hover:text-white
+                                        text-[10px]
+                                        font-bold
+                                        uppercase
+                                        transition-all
+                                    "
+                                >
+                                    <i class="fa-solid fa-trash mr-1"></i>
+                                    ELIMINAR
+                                </button>
+                              `
+                    }
+
+                </td>
+
+            </tr>
+
+        `;
+
+    }
+
+    /* ============================================================
+       CAMBIAR FILTRO
+       ============================================================ */
+
+    function setLedgerFilter(filter) {
+
+        if (
+            !['day', 'month', 'all'].includes(filter)
+        ) {
+            return;
+        }
+
+        currentLedgerFilter = filter;
+
+        renderLedger();
+
+    }
+
+    window.HORNO28_SET_LEDGER_FILTER =
+        setLedgerFilter;
+
+    /* ============================================================
+       ELIMINAR MOVIMIENTO
+       ============================================================ */
+
+    async function deleteTransaction(transactionId) {
+
+        const row = treasuryTransactions.find(
+            function (item) {
+                return item.id === transactionId;
             }
-          </td>
+        );
 
-          <td class="p-2">
-            ${escapeHtml(t.concept)}
-          </td>
+        if (!row) {
 
-          <td class="p-2">
-            ${escapeHtml(
-              t.category || 'general'
-            )}
-          </td>
+            alert(
+                'No se encontró el movimiento seleccionado.'
+            );
 
-          <td class="p-2">
-            ${escapeHtml(
-              t.paymentMethod || ''
-            )}
-          </td>
+            return;
 
-          <td class="p-2 text-right">
-            ${money(t.amount)}
-          </td>
+        }
 
-          <td class="p-2 text-center">
+        /*
+           IMPORTANTE:
 
-            ${
-              t.saleId
-                ? '<span class="text-xs">Protegido POS</span>'
-                : `
-                  <button
-                    type="button"
-                    class="text-red-600"
-                    onclick="HORNO28_DELETE_TRANSACTION('${t.id}')">
-                    Eliminar
-                  </button>
-                `
+           Si pertenece a una venta POS, NO eliminamos
+           solamente cash_transactions.
+
+           Eliminamos la venta completa mediante RPC.
+        */
+
+        if (row.sale_id) {
+
+            if (
+                typeof window.HORNO28_DELETE_SALE !==
+                'function'
+            ) {
+
+                alert(
+                    'El módulo de eliminación de ventas POS ' +
+                    'todavía no está disponible.'
+                );
+
+                return;
+
             }
 
-          </td>
+            await window.HORNO28_DELETE_SALE(
+                row.sale_id
+            );
 
-        </tr>
+            return;
 
-      `).join('') ||
+        }
 
-      `
-        <tr>
 
-          <td
-            colspan="8"
-            class="p-4 text-center">
+        /* --------------------------------------------------------
+           MOVIMIENTO MANUAL
+           -------------------------------------------------------- */
 
-            No hay movimientos
-            en este período.
+        const confirmed = confirm(
+            '¿Deseas eliminar definitivamente este movimiento?'
+        );
 
-          </td>
+        if (!confirmed) return;
 
-        </tr>
-      `;
-  }
+        const supabase = getSupabase();
+        const businessId = getBusinessId();
 
-  function escapeHtml(value) {
+        if (!supabase || !businessId) {
 
-    return String(value ?? '')
-      .replace(
-        /[&<>"']/g,
-        character => ({
-          '&': '&amp;',
-          '<': '&lt;',
-          '>': '&gt;',
-          '"': '&quot;',
-          "'": '&#039;'
-        }[character])
-      );
+            alert(
+                'La conexión con Supabase no está disponible.'
+            );
 
-  }
+            return;
 
-  async function saveCloudTransaction() {
+        }
 
-    const type =
-      document.getElementById(
-        'tx-type'
-      )?.value;
+        const { error } = await supabase
+            .from('cash_transactions')
+            .delete()
+            .eq('id', transactionId)
+            .eq('business_id', businessId);
 
-    const concept =
-      document.getElementById(
-        'tx-concept'
-      )?.value?.trim();
+        if (error) {
 
-    const amount =
-      Number(
-        document.getElementById(
-          'tx-amount'
-        )?.value || 0
-      );
+            console.error(
+                TAG,
+                'Error eliminando movimiento:',
+                error
+            );
 
-    if (
-      !type ||
-      !concept ||
-      amount <= 0
-    ) {
+            alert(
+                'No se pudo eliminar el movimiento.\n\n' +
+                error.message
+            );
 
-      alert(
-        'Completa tipo, concepto y un valor mayor que cero.'
-      );
+            return;
 
-      return;
+        }
+
+        /*
+           Actualizar memoria local
+        */
+
+        treasuryTransactions =
+            treasuryTransactions.filter(
+                function (item) {
+                    return item.id !== transactionId;
+                }
+            );
+
+        try {
+
+            if (typeof transactions !== 'undefined') {
+
+                transactions =
+                    transactions.filter(
+                        function (item) {
+                            return item.id !== transactionId;
+                        }
+                    );
+
+            }
+
+        } catch (e) {
+            console.warn(
+                TAG,
+                'No se pudo actualizar transactions.',
+                e
+            );
+        }
+
+        renderLedger();
+
+        if (
+            typeof window.renderDashboard ===
+            'function'
+        ) {
+            window.renderDashboard();
+        }
+
+        alert(
+            'Movimiento eliminado correctamente.'
+        );
+
     }
-
-    const category =
-      document.getElementById(
-        'tx-category'
-      )?.value ||
-      'general';
-
-    const paymentMethod =
-      document.getElementById(
-        'tx-payment-method'
-      )?.value ||
-      'cash';
-
-    const reference =
-      document.getElementById(
-        'tx-reference'
-      )?.value?.trim() ||
-      null;
-
-    const notes =
-      document.getElementById(
-        'tx-notes'
-      )?.value?.trim() ||
-      null;
-
-    const {
-      data,
-      error
-    } = await window.horno28Supabase
-
-      .from('cash_transactions')
-
-      .insert({
-
-        business_id:
-          window.HORNO28_CURRENT_BUSINESS_ID,
-
-        type,
-
-        category,
-
-        description:
-          concept,
-
-        amount,
-
-        payment_method:
-          paymentMethod,
-
-        reference,
-
-        notes
-
-      })
-
-      .select()
-
-      .single();
-
-    if (error) {
-
-      console.error(
-        TAG,
-        error
-      );
-
-      alert(
-        'No se pudo guardar el movimiento: ' +
-        error.message
-      );
-
-      return;
-    }
-
-    transactions.unshift({
-
-      id: data.id,
-
-      date:
-        data.transaction_date,
-
-      type:
-        data.type,
-
-      concept:
-        data.description,
-
-      amount:
-        Number(data.amount || 0),
-
-      category:
-        data.category,
-
-      paymentMethod:
-        data.payment_method,
-
-      reference:
-        data.reference || '',
-
-      notes:
-        data.notes || '',
-
-      saleId:
-        data.sale_id || null
-
-    });
-
-    try {
-
-      localStorage.setItem(
-        'h28_transactions',
-        JSON.stringify(transactions)
-      );
-
-    } catch (_) {}
-
-    document
-      .getElementById(
-        'modal-transaction'
-      )
-      ?.classList.add('hidden');
-
-    renderLedger();
-
-    console.log(
-      TAG,
-      'Movimiento guardado:',
-      data.id
-    );
-
-  }
-
-  async function deleteTransaction(id) {
-
-    const row =
-      transactions.find(
-        t => t.id === id
-      );
-
-    if (!row) return;
-
-    if (row.saleId) {
-
-      alert(
-        'Los movimientos generados por POS están protegidos.'
-      );
-
-      return;
-    }
-
-    if (
-      !confirm(
-        '¿Eliminar este movimiento?'
-      )
-    ) {
-      return;
-    }
-
-    const {
-      error
-    } = await window.horno28Supabase
-
-      .from('cash_transactions')
-
-      .delete()
-
-      .eq(
-        'id',
-        id
-      )
-
-      .eq(
-        'business_id',
-        window.HORNO28_CURRENT_BUSINESS_ID
-      );
-
-    if (error) {
-
-      console.error(
-        TAG,
-        error
-      );
-
-      alert(
-        'No se pudo eliminar: ' +
-        error.message
-      );
-
-      return;
-    }
-
-    const index =
-      transactions.findIndex(
-        t => t.id === id
-      );
-
-    if (index >= 0) {
-      transactions.splice(
-        index,
-        1
-      );
-    }
-
-    try {
-
-      localStorage.setItem(
-        'h28_transactions',
-        JSON.stringify(transactions)
-      );
-
-    } catch (_) {}
-
-    renderLedger();
-
-  }
-
-  function injectFields() {
-
-    const modal =
-      document.getElementById(
-        'modal-transaction'
-      );
-
-    if (
-      !modal ||
-      modal.dataset.h28Fields
-    ) {
-      return;
-    }
-
-    const amount =
-      document.getElementById(
-        'tx-amount'
-      );
-
-    if (!amount) return;
-
-    const box =
-      document.createElement(
-        'div'
-      );
-
-    box.className =
-      'space-y-3 mt-3';
-
-    box.innerHTML = `
-
-      <div>
-
-        <label class="block text-sm font-medium">
-          Categoría
-        </label>
-
-        <select
-          id="tx-category"
-          class="w-full border rounded p-2">
-
-          <option value="general">
-            General
-          </option>
-
-          <option value="compra_insumos">
-            Compra de insumos
-          </option>
-
-          <option value="nomina">
-            Nómina
-          </option>
-
-          <option value="arriendo">
-            Arriendo
-          </option>
-
-          <option value="servicios">
-            Servicios
-          </option>
-
-          <option value="transporte">
-            Transporte
-          </option>
-
-          <option value="impuestos">
-            Impuestos
-          </option>
-
-          <option value="marketing">
-            Marketing
-          </option>
-
-          <option value="mantenimiento">
-            Mantenimiento
-          </option>
-
-          <option value="otros">
-            Otros
-          </option>
-
-        </select>
-
-      </div>
-
-      <div>
-
-        <label class="block text-sm font-medium">
-          Método de pago
-        </label>
-
-        <select
-          id="tx-payment-method"
-          class="w-full border rounded p-2">
-
-          <option value="cash">
-            Efectivo
-          </option>
-
-          <option value="card">
-            Tarjeta
-          </option>
-
-          <option value="transfer">
-            Transferencia
-          </option>
-
-          <option value="nequi">
-            Nequi
-          </option>
-
-          <option value="daviplata">
-            Daviplata
-          </option>
-
-          <option value="other">
-            Otro
-          </option>
-
-        </select>
-
-      </div>
-
-      <div>
-
-        <label class="block text-sm font-medium">
-          Referencia
-        </label>
-
-        <input
-          id="tx-reference"
-          class="w-full border rounded p-2"
-          placeholder="Opcional">
-
-      </div>
-
-      <div>
-
-        <label class="block text-sm font-medium">
-          Notas
-        </label>
-
-        <textarea
-          id="tx-notes"
-          class="w-full border rounded p-2"
-          rows="2"
-          placeholder="Opcional">
-        </textarea>
-
-      </div>
-
-    `;
-
-    amount
-      .closest('.space-y-3')
-      ?.appendChild(box);
-
-    modal.dataset.h28Fields = '1';
-
-  }
-
-  async function init() {
-
-    if (
-      !window.horno28Supabase ||
-      !window.HORNO28_CURRENT_BUSINESS_ID
-    ) {
-
-      setTimeout(
-        init,
-        1000
-      );
-
-      return;
-    }
-
-    injectFields();
 
     window.HORNO28_DELETE_TRANSACTION =
-      deleteTransaction;
+        deleteTransaction;
+
+    /* ============================================================
+       REGISTRAR MOVIMIENTO MANUAL
+       ============================================================ */
+
+    async function saveTransactionCloud() {
+
+        const supabase = getSupabase();
+        const businessId = getBusinessId();
+
+        if (!supabase || !businessId) {
+
+            alert(
+                'La conexión con Supabase no está disponible.'
+            );
+
+            return;
+
+        }
+
+        const typeElement =
+            document.getElementById('tx-type');
+
+        const conceptElement =
+            document.getElementById('tx-concept');
+
+        const amountElement =
+            document.getElementById('tx-amount');
+
+        if (
+            !typeElement ||
+            !conceptElement ||
+            !amountElement
+        ) {
+
+            console.error(
+                TAG,
+                'No se encontraron los campos originales de tesorería.'
+            );
+
+            return;
+
+        }
+
+        const type = typeElement.value;
+
+        const concept =
+            conceptElement.value.trim();
+
+        const amount =
+            parseFloat(amountElement.value);
+
+        if (
+            !concept ||
+            isNaN(amount) ||
+            amount <= 0
+        ) {
+
+            if (
+                typeof window.showNotification ===
+                'function'
+            ) {
+
+                window.showNotification(
+                    'Ingresa un concepto y un monto válido en COP.',
+                    'error'
+                );
+
+            } else {
+
+                alert(
+                    'Ingresa un concepto y un monto válido en COP.'
+                );
+
+            }
+
+            return;
+
+        }
+
+
+        /*
+           Campos adicionales que agrega este módulo
+        */
+
+        const categoryElement =
+            document.getElementById(
+                'tx-category'
+            );
+
+        const paymentElement =
+            document.getElementById(
+                'tx-payment'
+            );
+
+        const referenceElement =
+            document.getElementById(
+                'tx-reference'
+            );
+
+        const notesElement =
+            document.getElementById(
+                'tx-notes'
+            );
+
+
+        const category =
+            categoryElement
+                ? categoryElement.value
+                : 'general';
+
+        const paymentMethod =
+            paymentElement
+                ? paymentElement.value
+                : 'cash';
+
+        const reference =
+            referenceElement
+                ? referenceElement.value.trim()
+                : '';
+
+        const notes =
+            notesElement
+                ? notesElement.value.trim()
+                : '';
+
+
+        const { data, error } = await supabase
+            .from('cash_transactions')
+            .insert({
+
+                business_id: businessId,
+
+                transaction_date:
+                    new Date().toISOString(),
+
+                type: type,
+
+                category: category,
+
+                description: concept,
+
+                amount: amount,
+
+                payment_method:
+                    paymentMethod,
+
+                reference:
+                    reference || null,
+
+                notes:
+                    notes || null
+
+            })
+            .select()
+            .single();
+
+
+        if (error) {
+
+            console.error(
+                TAG,
+                'Error registrando movimiento:',
+                error
+            );
+
+            alert(
+                'No se pudo registrar el movimiento.\n\n' +
+                error.message
+            );
+
+            return;
+
+        }
+
+
+        /*
+           Agregar inmediatamente a memoria
+        */
+
+        treasuryTransactions.unshift(data);
+
+
+        try {
+
+            if (
+                typeof transactions !==
+                'undefined'
+            ) {
+
+                transactions.unshift({
+
+                    id: data.id,
+
+                    date:
+                        data.transaction_date,
+
+                    type:
+                        data.type,
+
+                    concept:
+                        data.description,
+
+                    amount:
+                        Number(data.amount),
+
+                    paymentMethod:
+                        data.payment_method,
+
+                    category:
+                        data.category,
+
+                    reference:
+                        data.reference,
+
+                    notes:
+                        data.notes,
+
+                    saleId:
+                        data.sale_id
+
+                });
+
+            }
+
+        } catch (e) {
+
+            console.warn(
+                TAG,
+                'No se pudo actualizar transactions.',
+                e
+            );
+
+        }
+
+
+        /*
+           Cerrar modal
+        */
+
+        if (
+            typeof window.closeModal ===
+            'function'
+        ) {
+
+            window.closeModal(
+                'modal-transaction'
+            );
+
+        } else {
+
+            const modal =
+                document.getElementById(
+                    'modal-transaction'
+                );
+
+            if (modal) {
+                modal.classList.add('hidden');
+            }
+
+        }
+
+
+        renderLedger();
+
+
+        if (
+            typeof window.renderDashboard ===
+            'function'
+        ) {
+
+            window.renderDashboard();
+
+        }
+
+
+        if (
+            typeof window.showNotification ===
+            'function'
+        ) {
+
+            window.showNotification(
+                'Movimiento registrado correctamente en Tesorería.'
+            );
+
+        } else {
+
+            alert(
+                'Movimiento registrado correctamente.'
+            );
+
+        }
+
+    }
 
     window.saveTransaction =
-      saveCloudTransaction;
+        saveTransactionCloud;
 
-    await loadTransactions();
+    /* ============================================================
+       CAMPOS ADICIONALES EN MODAL
+       ============================================================ */
 
-    console.log(
-      TAG,
-      'Caja y Libro Diario sincronizados.'
-    );
+    function enhanceTransactionModal() {
 
-  }
+        const modal =
+            document.getElementById(
+                'modal-transaction'
+            );
 
-  if (
-    document.readyState ===
-    'loading'
-  ) {
+        if (!modal) return;
 
-    document.addEventListener(
-      'DOMContentLoaded',
-      init
-    );
+        /*
+           Evitar insertar dos veces
+        */
 
-  } else {
+        if (
+            document.getElementById(
+                'h28-treasury-extra-fields'
+            )
+        ) {
+            return;
+        }
 
-    init();
+        const amountElement =
+            document.getElementById(
+                'tx-amount'
+            );
 
-  }
+        if (!amountElement) return;
+
+        const amountContainer =
+            amountElement.parentElement;
+
+        if (!amountContainer) return;
+
+
+        const wrapper =
+            document.createElement('div');
+
+        wrapper.id =
+            'h28-treasury-extra-fields';
+
+        wrapper.className =
+            'space-y-4 mt-4';
+
+
+        wrapper.innerHTML = `
+
+            <div class="
+                grid
+                grid-cols-1
+                md:grid-cols-2
+                gap-4
+            ">
+
+                <!-- CATEGORÍA -->
+
+                <div>
+
+                    <label class="
+                        block
+                        text-xs
+                        font-bold
+                        uppercase
+                        tracking-wider
+                        text-gray-400
+                        mb-2
+                    ">
+                        Categoría
+                    </label>
+
+                    <select
+                        id="tx-category"
+                        class="
+                            w-full
+                            bg-asphalt
+                            border
+                            border-carbonBorder
+                            rounded-lg
+                            px-3
+                            py-2.5
+                            text-white
+                            text-sm
+                            focus:outline-none
+                            focus:border-f1Red
+                        "
+                    >
+
+                        <option value="general">
+                            General
+                        </option>
+
+                        <option value="purchase">
+                            Compra de insumos
+                        </option>
+
+                        <option value="supplies">
+                            Insumos
+                        </option>
+
+                        <option value="payroll">
+                            Nómina
+                        </option>
+
+                        <option value="rent">
+                            Arriendo
+                        </option>
+
+                        <option value="services">
+                            Servicios
+                        </option>
+
+                        <option value="transport">
+                            Transporte
+                        </option>
+
+                        <option value="marketing">
+                            Marketing
+                        </option>
+
+                        <option value="tax">
+                            Impuestos
+                        </option>
+
+                        <option value="other">
+                            Otros
+                        </option>
+
+                    </select>
+
+                </div>
+
+
+                <!-- MÉTODO DE PAGO -->
+
+                <div>
+
+                    <label class="
+                        block
+                        text-xs
+                        font-bold
+                        uppercase
+                        tracking-wider
+                        text-gray-400
+                        mb-2
+                    ">
+                        Método de pago
+                    </label>
+
+                    <select
+                        id="tx-payment"
+                        class="
+                            w-full
+                            bg-asphalt
+                            border
+                            border-carbonBorder
+                            rounded-lg
+                            px-3
+                            py-2.5
+                            text-white
+                            text-sm
+                            focus:outline-none
+                            focus:border-f1Red
+                        "
+                    >
+
+                        <option value="cash">
+                            Efectivo
+                        </option>
+
+                        <option value="card">
+                            Tarjeta
+                        </option>
+
+                        <option value="transfer">
+                            Transferencia
+                        </option>
+
+                        <option value="nequi">
+                            Nequi
+                        </option>
+
+                        <option value="daviplata">
+                            Daviplata
+                        </option>
+
+                        <option value="other">
+                            Otro
+                        </option>
+
+                    </select>
+
+                </div>
+
+            </div>
+
+
+            <!-- REFERENCIA -->
+
+            <div>
+
+                <label class="
+                    block
+                    text-xs
+                    font-bold
+                    uppercase
+                    tracking-wider
+                    text-gray-400
+                    mb-2
+                ">
+                    Referencia
+                </label>
+
+                <input
+                    id="tx-reference"
+                    type="text"
+                    placeholder="Ej. factura, comprobante..."
+                    class="
+                        w-full
+                        bg-asphalt
+                        border
+                        border-carbonBorder
+                        rounded-lg
+                        px-3
+                        py-2.5
+                        text-white
+                        text-sm
+                        placeholder-gray-600
+                        focus:outline-none
+                        focus:border-f1Red
+                    "
+                >
+
+            </div>
+
+
+            <!-- NOTAS -->
+
+            <div>
+
+                <label class="
+                    block
+                    text-xs
+                    font-bold
+                    uppercase
+                    tracking-wider
+                    text-gray-400
+                    mb-2
+                ">
+                    Notas
+                </label>
+
+                <textarea
+                    id="tx-notes"
+                    rows="2"
+                    placeholder="Observaciones del movimiento..."
+                    class="
+                        w-full
+                        bg-asphalt
+                        border
+                        border-carbonBorder
+                        rounded-lg
+                        px-3
+                        py-2.5
+                        text-white
+                        text-sm
+                        placeholder-gray-600
+                        focus:outline-none
+                        focus:border-f1Red
+                    "
+                ></textarea>
+
+            </div>
+
+        `;
+
+
+        /*
+           Insertar después del contenedor del monto
+        */
+
+        amountContainer.parentNode.insertBefore(
+            wrapper,
+            amountContainer.nextSibling
+        );
+
+    }
+
+    /* ============================================================
+       REFRESH PÚBLICO
+       ============================================================ */
+
+    window.HORNO28_REFRESH_TREASURY =
+        loadTransactions;
+
+    window.HORNO28_LOAD_TREASURY =
+        loadTransactions;
+
+
+    /* ============================================================
+       INICIALIZACIÓN
+       ============================================================ */
+
+    async function initTreasury() {
+
+        console.log(
+            TAG,
+            'Inicializando módulo de Tesorería...'
+        );
+
+
+        /*
+           Esperar a que Supabase/Auth estén listos.
+        */
+
+        let attempts = 0;
+
+        const maxAttempts = 60;
+
+
+        const waitForSupabase = setInterval(
+            async function () {
+
+                attempts++;
+
+
+                if (
+                    window.horno28Supabase &&
+                    window.HORNO28_CURRENT_BUSINESS_ID
+                ) {
+
+                    clearInterval(
+                        waitForSupabase
+                    );
+
+
+                    enhanceTransactionModal();
+
+                    await loadTransactions();
+
+
+                    console.log(
+                        TAG,
+                        'Módulo inicializado correctamente.'
+                    );
+
+                }
+
+
+                if (attempts >= maxAttempts) {
+
+                    clearInterval(
+                        waitForSupabase
+                    );
+
+                    console.warn(
+                        TAG,
+                        'Tiempo de espera agotado esperando autenticación.'
+                    );
+
+                }
+
+            },
+            500
+        );
+
+
+        /*
+           El modal puede crearse después,
+           por eso intentamos nuevamente.
+        */
+
+        setTimeout(
+            enhanceTransactionModal,
+            1000
+        );
+
+        setTimeout(
+            enhanceTransactionModal,
+            2500
+        );
+
+    }
+
+
+    /*
+       Esperar DOM
+    */
+
+    if (
+        document.readyState ===
+        'loading'
+    ) {
+
+        document.addEventListener(
+            'DOMContentLoaded',
+            initTreasury
+        );
+
+    } else {
+
+        initTreasury();
+
+    }
+
 
 })();
