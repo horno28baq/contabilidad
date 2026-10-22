@@ -447,17 +447,50 @@
                             <p class="text-center text-xs text-gray-500 py-8 italic">No hay productos en la orden actual.</p>
                         </div>
 
+                        <!-- Datos del cliente y descuento de la orden -->
+                        <div class="border-t border-carbonBorder pt-4 space-y-3">
+                            <div>
+                                <label for="pos-customer-name" class="block text-xs font-bold text-gray-300 uppercase tracking-wider mb-1.5">
+                                    <i class="fa-solid fa-user mr-1 text-gold"></i>Nombre del cliente (opcional)
+                                </label>
+                                <input type="text" id="pos-customer-name" maxlength="160" autocomplete="name"
+                                    placeholder="Nombre del cliente"
+                                    class="w-full bg-asphalt border border-carbonBorder rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-gold">
+                            </div>
+                            <div>
+                                <label for="pos-discount-percent" class="block text-xs font-bold text-gray-300 uppercase tracking-wider mb-1.5">
+                                    <i class="fa-solid fa-percent mr-1 text-gold"></i>Descuento general (%)
+                                </label>
+                                <input type="number" id="pos-discount-percent" min="0" max="100" step="0.1" value="0" inputmode="decimal"
+                                    oninput="renderCart()"
+                                    aria-describedby="pos-discount-help"
+                                    class="w-full bg-asphalt border border-carbonBorder rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-gold">
+                                <p id="pos-discount-help" class="text-[10px] text-gray-500 mt-1">Se aplica al subtotal completo de la orden.</p>
+                            </div>
+                        </div>
+
                         <!-- Summary -->
-                        <div class="border-t border-carbonBorder pt-4 space-y-4">
+                        <div class="border-t border-carbonBorder pt-4 space-y-3">
                             <div class="flex justify-between items-center text-gray-400 text-sm">
                                 <span>Método de Pago:</span>
                                 <select id="pos-payment-method" class="bg-asphalt border border-carbonBorder text-white text-xs font-bold rounded-lg px-3 py-1.5 focus:outline-none focus:border-f1Red">
                                     <option value="EFECTIVO">EFECTIVO</option>
                                     <option value="TARJETA / DATÁFONO">TARJETA / DATÁFONO</option>
-                                    <option value="TRANSFERENCIA / NEQUI / DAVIPLATA">TRANSFERENCIA / NEQUI</option>
+                                    <option value="TRANSFERENCIA / NEQUI / DAVIPLATA">TRANSFERENCIA / NEQUI / DAVIPLATA</option>
+                                    <option value="LLAVE">LLAVE</option>
                                 </select>
                             </div>
 
+                            <div class="space-y-1.5 text-sm">
+                                <div class="flex justify-between text-gray-400">
+                                    <span>Subtotal:</span>
+                                    <span id="pos-cart-subtotal">$0</span>
+                                </div>
+                                <div class="flex justify-between text-gray-400">
+                                    <span>Descuento:</span>
+                                    <span id="pos-cart-discount" class="text-telemetryGreen">-$0</span>
+                                </div>
+                            </div>
                             <div class="flex justify-between items-baseline bg-asphalt p-4 rounded-xl border border-carbonBorder">
                                 <span class="font-teko text-2xl text-gray-300">TOTAL:</span>
                                 <span id="pos-cart-total" class="font-teko text-4xl font-extrabold text-gold">$0</span>
@@ -490,10 +523,12 @@
                         <thead class="bg-asphalt text-gray-400 font-bold uppercase tracking-wider border-b border-carbonBorder">
                             <tr>
                                 <th class="p-3">FECHA / HORA</th>
+                                <th class="p-3">CLIENTE</th>
                                 <th class="p-3">CATEGORÍA</th>
                                 <th class="p-3">PRODUCTO(S)</th>
                                 <th class="p-3">CANTIDAD</th>
                                 <th class="p-3">MÉTODO PAGO</th>
+                                <th class="p-3 text-right">DESCUENTO</th>
                                 <th class="p-3 text-right">TOTAL ($ COP)</th>
                                 <th class="p-3 text-center">ACCIONES</th>
                             </tr>
@@ -922,6 +957,12 @@
             return '$' + Math.round(amount || 0).toLocaleString('es-CO');
         }
 
+        function escapeHTML(value) {
+            return String(value ?? '').replace(/[&<>"']/g, character => ({
+                '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+            })[character]);
+        }
+
         // Helper: Calculate Unit Cost for any Ingredient
         function getUnitCost(ing) {
             if (!ing || !ing.stock || ing.stock <= 0) return 0;
@@ -1224,18 +1265,39 @@
             renderCart();
         }
 
+        function calculatePOSAmounts() {
+            const subtotal = Array.isArray(cart)
+                ? cart.reduce((sum, item) => sum + ((Number(item.price) || 0) * (Number(item.qty) || 0)), 0)
+                : 0;
+            const discountInput = document.getElementById('pos-discount-percent');
+            const rawPercent = discountInput ? Number(discountInput.value) : 0;
+            const discountPercent = Number.isFinite(rawPercent) ? Math.min(100, Math.max(0, rawPercent)) : 0;
+            const discount = Math.round(subtotal * discountPercent / 100);
+            return { subtotal, discountPercent, discount, total: Math.max(0, subtotal - discount) };
+        }
+
+        function updatePOSSummary() {
+            const amounts = calculatePOSAmounts();
+            const subtotalEl = document.getElementById('pos-cart-subtotal');
+            const discountEl = document.getElementById('pos-cart-discount');
+            const totalEl = document.getElementById('pos-cart-total');
+            if (subtotalEl) subtotalEl.innerText = formatCOP(amounts.subtotal);
+            if (discountEl) discountEl.innerText = '-' + formatCOP(amounts.discount);
+            if (totalEl) totalEl.innerText = formatCOP(amounts.total);
+            return amounts;
+        }
+
         function renderCart() {
             const container = document.getElementById('pos-cart-items');
+            if (!container) return;
             if (cart.length === 0) {
                 container.innerHTML = `<p class="text-center text-xs text-gray-500 py-8 italic">No hay productos en la orden actual.</p>`;
-                document.getElementById('pos-cart-total').innerText = '$0 COP';
+                updatePOSSummary();
                 return;
             }
 
-            let total = 0;
             container.innerHTML = cart.map((item, index) => {
                 const subtotal = item.price * item.qty;
-                total += subtotal;
                 return `
                     <div class="flex items-center justify-between p-2.5 bg-asphalt rounded-xl border border-carbonBorder">
                         <div class="flex-grow pr-2">
@@ -1252,7 +1314,7 @@
                 `;
             }).join('');
 
-            document.getElementById('pos-cart-total').innerText = formatCOP(total);
+            updatePOSSummary();
         }
 
         function updateCartQty(index, change) {
@@ -1327,7 +1389,7 @@
         function renderSalesHistory() {
             const tbody = document.getElementById('pos-history-tbody');
             if(sales.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="7" class="p-4 text-center text-gray-500 italic">No hay historial de ventas.</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="9" class="p-4 text-center text-gray-500 italic">No hay historial de ventas.</td></tr>`;
                 return;
             }
 
@@ -1339,10 +1401,12 @@
                 return `
                     <tr class="hover:bg-asphalt/50">
                         <td class="p-3 font-mono text-[11px] text-gray-400">${dateFormatted}</td>
+                        <td class="p-3 text-gray-200">${escapeHTML(s.customerName || '—')}</td>
                         <td class="p-3"><span class="px-2 py-0.5 bg-carbonLight text-gold rounded border border-gold/30 text-[10px] font-bold">${s.category || 'Pizzas'}</span></td>
                         <td class="p-3 font-medium text-white">${itemSummary}</td>
                         <td class="p-3 font-bold text-center">${totalQty}</td>
                         <td class="p-3"><span class="px-2 py-0.5 bg-carbonLight text-gray-300 rounded border border-carbonBorder text-[10px] font-bold">${s.paymentMethod}</span></td>
+                        <td class="p-3 text-right text-telemetryGreen">${formatCOP(s.discount || 0)}</td>
                         <td class="p-3 text-right font-teko text-xl font-bold text-gold">${formatCOP(s.total)}</td>
                         <td class="p-3 text-center">
                             <button onclick="deleteSale('${s.id}')" class="text-red-400 hover:text-f1Red p-1 text-xs"><i class="fa-solid fa-trash"></i></button>
