@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+ <!DOCTYPE html>
 <html lang="es" class="dark">
 <head>
     <meta charset="UTF-8">
@@ -21,7 +21,7 @@
 <script src="supabase-config.js"></script>
 <script src="supabase-auth.js"></script>
 <script src="supabase-inventory.js"></script>
-<script src="supabase-recipes.js"></script>
+<script src="supabase-recipes.js" defer></script>
 <script src="supabase-pos.js"></script>
 <script src="supabase-pos-edit-return.js"></script>
 <script src="supabase-treasury.js"></script>
@@ -786,18 +786,27 @@
                 <input type="number" step="1" id="rec-price" oninput="updateEscandalloCalculations()" placeholder="Ej: 42000" class="w-full bg-asphalt border border-carbonBorder rounded-lg p-2.5 text-white focus:outline-none focus:border-gold font-bold">
             </div>
 
-            <!-- Ingredients Selection Table in Recipe -->
+            <!-- Componentes de combo: exclusivamente para Combos/Premios -->
+            <div id="combo-components-section" class="hidden space-y-3 rounded-xl border border-gold/40 bg-asphalt p-3">
+                <div>
+                    <h4 class="text-sm font-extrabold uppercase tracking-wider text-gold"><i class="fa-solid fa-layer-group mr-2"></i>Productos incluidos en el combo</h4>
+                    <p class="text-[10px] text-gray-400 mt-1">Selecciona fichas técnicas de pizzas o panes. Los combos no pueden incluir otros combos.</p>
+                </div>
+                <div id="combo-components-rows" class="space-y-2"></div>
+                <button type="button" onclick="addComboComponentRow()" class="px-3 py-2 bg-carbonLight hover:bg-carbonBorder text-gold border border-gold/30 rounded-lg text-xs font-bold"><i class="fa-solid fa-plus mr-1"></i>Añadir producto al combo</button>
+            </div>
+
+            <!-- Insumos adicionales; en combos se filtran por categoría -->
             <div class="space-y-2">
-                <div class="flex justify-between items-center">
-                    <label class="text-xs text-gold font-bold uppercase tracking-wider">Insumos y Cantidades Requeridas</label>
-                    <button onclick="addIngredientRowToRecipe()" class="px-2.5 py-1 bg-carbonLight hover:bg-carbonBorder text-gold border border-gold/30 rounded text-xs font-bold">
-                        <i class="fa-solid fa-plus mr-1"></i>Añadir Insumo
-                    </button>
+                <div class="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-2">
+                    <div>
+                        <label class="text-xs text-gold font-bold uppercase tracking-wider">Insumos y Cantidades Requeridas</label>
+                        <p id="recipe-ingredients-help" class="text-[10px] text-gray-400 mt-1">Añade los ingredientes de preparación de esta ficha técnica.</p>
+                    </div>
+                    <button onclick="addIngredientRowToRecipe()" class="px-2.5 py-1 bg-carbonLight hover:bg-carbonBorder text-gold border border-gold/30 rounded text-xs font-bold"><i class="fa-solid fa-plus mr-1"></i>Añadir Insumo</button>
                 </div>
                 <div class="border border-carbonBorder rounded-xl overflow-hidden bg-asphalt p-2">
-                    <div id="recipe-ingredients-rows" class="space-y-2">
-                        <!-- Dynamic rows inserted here -->
-                    </div>
+                    <div id="recipe-ingredients-rows" class="space-y-2"><!-- Dynamic rows inserted here --></div>
                 </div>
             </div>
 
@@ -1645,52 +1654,182 @@
             }).join('');
         }
 
+        function isComboCategory(category) {
+            return String(category || '').trim().toLowerCase() === 'combos/premios';
+        }
+
+        function parseComboMetadata(recipe) {
+            if (Array.isArray(recipe?.comboComponents)) return recipe.comboComponents;
+            if (recipe?.notes && String(recipe.notes).startsWith('H28_COMBO_META:')) {
+                try {
+                    const meta = JSON.parse(String(recipe.notes).slice('H28_COMBO_META:'.length));
+                    return Array.isArray(meta.components) ? meta.components : [];
+                } catch (_) { return []; }
+            }
+            return [];
+        }
+
+        function getRecipeBaseItems(recipe) {
+            return Array.isArray(recipe?.items) ? recipe.items : [];
+        }
+
+        function getComboComponentItems(recipe) {
+            const components = parseComboMetadata(recipe);
+            const flattened = [];
+            components.forEach(component => {
+                const child = recipes.find(r => String(r.id) === String(component.recipeId));
+                const multiplier = Number(component.quantity) || 0;
+                if (!child || multiplier <= 0) return;
+                getRecipeBaseItems(child).forEach(item => {
+                    flattened.push({ ingredientId: item.ingredientId, quantity: (Number(item.quantity) || 0) * multiplier, unit: item.unit || '' });
+                });
+            });
+            return flattened;
+        }
+
+        function getDirectItemsForRecipeModal(recipe) {
+            if (!isComboCategory(recipe?.category)) return getRecipeBaseItems(recipe);
+            if (Array.isArray(recipe?.extraItems)) return recipe.extraItems;
+            if (recipe?.notes && String(recipe.notes).startsWith('H28_COMBO_META:')) {
+                try {
+                    const meta = JSON.parse(String(recipe.notes).slice('H28_COMBO_META:'.length));
+                    if (Array.isArray(meta.extraItems)) return meta.extraItems;
+                } catch (_) {}
+            }
+            const componentTotals = new Map();
+            getComboComponentItems(recipe).forEach(item => {
+                const key = String(item.ingredientId);
+                componentTotals.set(key, (componentTotals.get(key) || 0) + Number(item.quantity || 0));
+            });
+            const baseTotals = new Map();
+            getRecipeBaseItems(recipe).forEach(item => {
+                const key = String(item.ingredientId);
+                baseTotals.set(key, (baseTotals.get(key) || 0) + Number(item.quantity || 0));
+            });
+            const extras = [];
+            const allKeys = new Set([...baseTotals.keys(), ...componentTotals.keys()]);
+            allKeys.forEach(key => {
+                const qty = (baseTotals.get(key) || 0) - (componentTotals.get(key) || 0);
+                if (qty > 0.000001) {
+                    const original = getRecipeBaseItems(recipe).find(item => String(item.ingredientId) === key) || {};
+                    extras.push({ ingredientId: original.ingredientId || key, quantity: qty, unit: original.unit || '' });
+                }
+            });
+            return extras;
+        }
+
+        function syncComboVisibility() {
+            const category = document.getElementById('rec-category').value;
+            const isCombo = isComboCategory(category);
+            document.getElementById('combo-components-section').classList.toggle('hidden', !isCombo);
+            document.getElementById('recipe-ingredients-help').innerText = isCombo
+                ? 'Añade bebidas, empaques u otros insumos adicionales. Los ingredientes de las fichas incluidas se calculan automáticamente.'
+                : 'Añade los ingredientes de preparación de esta ficha técnica.';
+            updateEscandalloCalculations();
+        }
+
         function openRecipeModal(id = null) {
             document.getElementById('rec-id').value = id || '';
             document.getElementById('rec-name').value = '';
             document.getElementById('rec-price').value = '';
             document.getElementById('rec-category').value = 'Pizzas';
             document.getElementById('recipe-ingredients-rows').innerHTML = '';
+            document.getElementById('combo-components-rows').innerHTML = '';
+            document.getElementById('rec-category').onchange = syncComboVisibility;
 
-            if(id) {
+            if (id) {
                 const rec = recipes.find(r => r.id === id);
-                if(rec) {
+                if (rec) {
                     document.getElementById('modal-recipe-title').innerText = 'EDITAR FICHA TÉCNICA';
                     document.getElementById('rec-name').value = rec.name;
                     document.getElementById('rec-price').value = rec.price;
                     document.getElementById('rec-category').value = rec.category || 'Pizzas';
-                    rec.items.forEach(item => addIngredientRowToRecipe(item.ingredientId, item.quantity));
+                    getDirectItemsForRecipeModal(rec).forEach(item => addIngredientRowToRecipe(item.ingredientId, item.quantity));
+                    parseComboMetadata(rec).forEach(component => addComboComponentRow(component.recipeId, component.quantity));
                 }
             } else {
                 document.getElementById('modal-recipe-title').innerText = 'NUEVA FICHA TÉCNICA (ESCANDALLO)';
                 addIngredientRowToRecipe();
             }
-
+            syncComboVisibility();
             updateEscandalloCalculations();
             document.getElementById('modal-recipe').classList.remove('hidden');
+        }
+
+        function addComboComponentRow(selectedRecipeId = '', quantity = 1) {
+            const container = document.getElementById('combo-components-rows');
+            const rowId = 'combo-row-' + Date.now() + Math.random().toString(36).slice(2, 6);
+            const candidates = recipes.filter(recipe => !isComboCategory(recipe.category) && ['Pizzas', 'Panes Varios'].includes(recipe.category));
+            const options = candidates.map(recipe => `<option value="${escapeHTML(recipe.id)}" ${String(recipe.id) === String(selectedRecipeId) ? 'selected' : ''}>${escapeHTML(recipe.name)} — ${escapeHTML(recipe.category)}</option>`).join('');
+            container.insertAdjacentHTML('beforeend', `
+                <div id="${rowId}" class="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_100px_36px] gap-2 items-center">
+                    <select class="combo-recipe-select w-full bg-carbon border border-carbonBorder rounded-lg p-2 text-white text-xs" onchange="updateEscandalloCalculations()">
+                        <option value="">-- Seleccionar pizza o pan --</option>${options}
+                    </select>
+                    <input class="combo-recipe-qty w-full bg-carbon border border-carbonBorder rounded-lg p-2 text-white text-xs" type="number" min="0.01" step="0.01" value="${Number(quantity) || 1}" aria-label="Cantidad de productos incluidos" oninput="updateEscandalloCalculations()">
+                    <button type="button" onclick="document.getElementById('${rowId}').remove(); updateEscandalloCalculations();" class="text-red-400 hover:text-f1Red px-2" aria-label="Quitar producto"><i class="fa-solid fa-trash"></i></button>
+                </div>`);
+        }
+
+        function getSelectedComboComponents() {
+            const selects = document.querySelectorAll('.combo-recipe-select');
+            const quantities = document.querySelectorAll('.combo-recipe-qty');
+            const result = [];
+            selects.forEach((select, index) => {
+                const qty = Number(quantities[index]?.value) || 0;
+                if (select.value && qty > 0) result.push({ recipeId: select.value, quantity: qty });
+            });
+            return result;
         }
 
         function addIngredientRowToRecipe(selectedIngId = '', quantity = '') {
             const container = document.getElementById('recipe-ingredients-rows');
             const rowId = 'rec-row-' + Date.now() + Math.random().toString(36).substr(2, 4);
-
-            const options = ingredients.map(i => {
+            const isCombo = isComboCategory(document.getElementById('rec-category').value);
+            const available = ingredients.filter(i => !isCombo || ['Pizzas', 'Panes Varios', 'Bebidas'].includes(i.category));
+            const options = available.map(i => {
                 const unitCost = getUnitCost(i);
-                return `<option value="${i.id}" ${i.id === selectedIngId ? 'selected' : ''}>${i.name} (${i.unit}) - ${formatCOP(unitCost)}/${i.unit}</option>`;
+                return `<option value="${escapeHTML(i.id)}" ${String(i.id) === String(selectedIngId) ? 'selected' : ''}>${escapeHTML(i.name)} (${escapeHTML(i.unit || '')}) - ${formatCOP(unitCost)}/${escapeHTML(i.unit || '')}</option>`;
             }).join('');
-
-            const rowHTML = `
-                <div id="${rowId}" class="flex items-center space-x-2">
-                    <select onchange="updateEscandalloCalculations()" class="rec-ing-select flex-grow bg-carbon border border-carbonBorder rounded-lg p-2 text-white text-xs font-bold focus:outline-none focus:border-gold">
-                        <option value="">-- Seleccionar Insumo --</option>
-                        ${options}
+            const categoryFilter = isCombo ? `
+                <select class="rec-ing-category bg-carbon border border-carbonBorder rounded-lg p-2 text-white text-xs" aria-label="Filtrar insumos por categoría" onchange="filterRecipeIngredientOptions(this)">
+                    <option value="Todas">Todas</option><option value="Pizzas">Pizzas</option><option value="Panes Varios">Panes varios</option><option value="Bebidas">Bebidas</option>
+                </select>` : '';
+            container.insertAdjacentHTML('beforeend', `
+                <div id="${rowId}" class="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_100px_36px] gap-2 items-center">
+                    ${categoryFilter}
+                    <select onchange="updateEscandalloCalculations()" class="rec-ing-select min-w-0 w-full bg-carbon border border-carbonBorder rounded-lg p-2 text-white text-xs font-bold focus:outline-none focus:border-gold">
+                        <option value="">-- Seleccionar Insumo --</option>${options}
                     </select>
-                    <input type="number" step="0.01" value="${quantity}" oninput="updateEscandalloCalculations()" placeholder="Cant." class="rec-ing-qty w-24 bg-carbon border border-carbonBorder rounded-lg p-2 text-white text-xs focus:outline-none focus:border-gold">
-                    <button onclick="document.getElementById('${rowId}').remove(); updateEscandalloCalculations();" class="text-red-400 hover:text-f1Red px-2 text-sm"><i class="fa-solid fa-trash"></i></button>
-                </div>
-            `;
+                    <input type="number" min="0" step="0.01" value="${quantity}" oninput="updateEscandalloCalculations()" placeholder="Cant." class="rec-ing-qty w-full bg-carbon border border-carbonBorder rounded-lg p-2 text-white text-xs">
+                    <button type="button" onclick="document.getElementById('${rowId}').remove(); updateEscandalloCalculations();" class="text-red-400 hover:text-f1Red px-2 text-sm"><i class="fa-solid fa-trash"></i></button>
+                </div>`);
+            const row = document.getElementById(rowId);
+            const select = row.querySelector('.rec-ing-select');
+            if (selectedIngId && !available.some(i => String(i.id) === String(selectedIngId))) {
+                const original = ingredients.find(i => String(i.id) === String(selectedIngId));
+                if (original) select.insertAdjacentHTML('beforeend', `<option value="${escapeHTML(original.id)}" selected>${escapeHTML(original.name)} (${escapeHTML(original.unit || '')})</option>`);
+            }
+            if (isCombo && selectedIngId) {
+                const ing = ingredients.find(i => String(i.id) === String(selectedIngId));
+                const filter = row.querySelector('.rec-ing-category');
+                if (ing && filter) filter.value = ['Pizzas', 'Panes Varios', 'Bebidas'].includes(ing.category) ? ing.category : 'Todas';
+            }
+        }
 
-            container.insertAdjacentHTML('beforeend', rowHTML);
+        function filterRecipeIngredientOptions(filter) {
+            const row = filter.closest('[id^="rec-row-"]');
+            const select = row?.querySelector('.rec-ing-select');
+            if (!select) return;
+            const previous = select.value;
+            const category = filter.value;
+            const available = ingredients.filter(i => category === 'Todas' || i.category === category);
+            select.innerHTML = `<option value="">-- Seleccionar Insumo --</option>` + available.map(i => {
+                const unitCost = getUnitCost(i);
+                return `<option value="${escapeHTML(i.id)}">${escapeHTML(i.name)} (${escapeHTML(i.unit || '')}) - ${formatCOP(unitCost)}/${escapeHTML(i.unit || '')}</option>`;
+            }).join('');
+            if (available.some(i => String(i.id) === String(previous))) select.value = previous;
+            updateEscandalloCalculations();
         }
 
         function updateEscandalloCalculations() {
@@ -1703,13 +1842,20 @@
             selects.forEach((select, idx) => {
                 const ingId = select.value;
                 const qty = parseFloat(quantities[idx].value) || 0;
-                const ing = ingredients.find(i => i.id === ingId);
-
-                if(ing && qty > 0) {
-                    const unitCost = getUnitCost(ing);
-                    totalCostPrimo += unitCost * qty;
-                }
+                const ing = ingredients.find(i => String(i.id) === String(ingId));
+                if (ing && qty > 0) totalCostPrimo += getUnitCost(ing) * qty;
             });
+
+            if (isComboCategory(document.getElementById('rec-category').value)) {
+                getSelectedComboComponents().forEach(component => {
+                    const child = recipes.find(recipe => String(recipe.id) === String(component.recipeId));
+                    if (!child) return;
+                    getRecipeBaseItems(child).forEach(item => {
+                        const ing = ingredients.find(i => String(i.id) === String(item.ingredientId));
+                        if (ing) totalCostPrimo += getUnitCost(ing) * (Number(item.quantity) || 0) * component.quantity;
+                    });
+                });
+            }
 
             const foodCostPct = price > 0 ? ((totalCostPrimo / price) * 100) : 0;
             const margin = price - totalCostPrimo;
@@ -1726,36 +1872,55 @@
             const name = document.getElementById('rec-name').value.trim();
             const category = document.getElementById('rec-category').value;
             const price = parseFloat(document.getElementById('rec-price').value);
-
-            if(!name || isNaN(price) || price <= 0) {
+            if (!name || isNaN(price) || price <= 0) {
                 showNotification('Ingresa el nombre del producto y un precio de venta al público válido.', 'error');
                 return;
             }
-
-            const items = [];
+            const extraItems = [];
             const selects = document.querySelectorAll('.rec-ing-select');
             const quantities = document.querySelectorAll('.rec-ing-qty');
-
             selects.forEach((select, idx) => {
-                const ingId = select.value;
-                const qty = parseFloat(quantities[idx].value);
-                if(ingId && !isNaN(qty) && qty > 0) {
-                    items.push({ ingredientId: ingId, quantity: qty });
-                }
+                const qty = Number(quantities[idx]?.value) || 0;
+                if (select.value && qty > 0) extraItems.push({ ingredientId: select.value, quantity: qty, unit: ingredients.find(i => String(i.id) === String(select.value))?.unit || '' });
             });
-
-            if(id) {
-                const rec = recipes.find(r => r.id === id);
-                if(rec) {
-                    rec.name = name;
-                    rec.category = category;
-                    rec.price = price;
-                    rec.items = items;
+            let comboComponents = [];
+            let items = extraItems.slice();
+            if (isComboCategory(category)) {
+                comboComponents = getSelectedComboComponents();
+                if (!comboComponents.length && !extraItems.length) {
+                    showNotification('Añade al menos una pizza, un pan o un insumo al combo.', 'error');
+                    return;
+                }
+                for (const component of comboComponents) {
+                    const child = recipes.find(recipe => String(recipe.id) === String(component.recipeId));
+                    if (!child || isComboCategory(child.category)) {
+                        showNotification('Los combos solo pueden incluir fichas técnicas de pizzas o panes.', 'error');
+                        return;
+                    }
+                    getRecipeBaseItems(child).forEach(item => items.push({ ingredientId: item.ingredientId, quantity: (Number(item.quantity) || 0) * component.quantity, unit: item.unit || '' }));
+                }
+            }
+            // Aggregate repeated ingredients so inventory consumption and costing happen once per ingredient.
+            const grouped = new Map();
+            items.forEach(item => {
+                const key = String(item.ingredientId);
+                const current = grouped.get(key) || { ingredientId: item.ingredientId, quantity: 0, unit: item.unit || '' };
+                current.quantity += Number(item.quantity) || 0;
+                grouped.set(key, current);
+            });
+            items = Array.from(grouped.values()).filter(item => item.quantity > 0);
+            const comboMeta = isComboCategory(category) ? comboComponents : [];
+            if (id) {
+                const rec = recipes.find(r => String(r.id) === String(id));
+                if (rec) {
+                    rec.name = name; rec.category = category; rec.price = price; rec.items = items;
+                    rec.comboComponents = comboMeta;
+                    rec.extraItems = extraItems;
+                    rec.notes = isComboCategory(category) ? 'H28_COMBO_META:' + JSON.stringify({ components: comboMeta, extraItems }) : null;
                 }
             } else {
-                recipes.push({ id: 'rec-' + Date.now(), name, category, price, items });
+                recipes.push({ id: 'rec-' + Date.now(), name, category, price, items, comboComponents: comboMeta, extraItems, notes: isComboCategory(category) ? 'H28_COMBO_META:' + JSON.stringify({ components: comboMeta, extraItems }) : null });
             }
-
             saveStorageData();
             closeModal('modal-recipe');
             renderRecipesGrid();
@@ -1950,14 +2115,6 @@
         }
     </script>
 
-<script src="supabase-config.js"></script>
-<script src="supabase-auth.js"></script>
-
-<!-- JavaScript original de HORNO 28 -->
-
-<script src="supabase-inventory.js"></script>
-<script src="supabase-recipes.js"></script>
-<script src="supabase-pos.js"></script>
-    
+<!-- Los módulos de Supabase se cargan una sola vez en el encabezado. -->
 </body>
 </html>
