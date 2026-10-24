@@ -93,9 +93,19 @@
     }
 
     function subscribe() {
-        const id = businessId();
+    SB = window.horno28Supabase;
 
-        if (!id) {
+    if (!SB) {
+        console.warn(
+            '[HORNO28 Realtime] Cliente aún no disponible. Reintentando...'
+        );
+        setTimeout(subscribe, 1500);
+        return;
+    }
+
+    const id = businessId();
+
+    if (!id) {
             console.warn('[HORNO28 Realtime] Aún no hay business_id. Reintentando...');
             setTimeout(subscribe, 1500);
             return;
