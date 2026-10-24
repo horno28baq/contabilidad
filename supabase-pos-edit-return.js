@@ -174,8 +174,6 @@ async function returnSale(id) {
       'error'
     );
   }
-}
-
   }
   async function deleteSale(id){
     const s=cache.find(x=>x.id===id);if(!s)return notify('No se encontró la venta.','error');
