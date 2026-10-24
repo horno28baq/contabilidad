@@ -122,7 +122,12 @@
                 SB.removeChannel(window.HORNO28_REALTIME_CHANNEL);
             } catch (_) {}
         }
-
+       
+console.log('[HORNO28 Realtime] Intentando crear canal', {
+    clienteDisponible: !!SB,
+    negocio: id,
+    nombre: channelName()
+});
         const channel = SB
             .channel(channelName())
             .on(
@@ -205,6 +210,11 @@
 
     // Auth puede tardar unos instantes en establecer CURRENT_BUSINESS_ID.
     const start = () => setTimeout(subscribe, 500);
+   console.log('[HORNO28 Realtime] Módulo cargado', {
+    clienteDisponible: !!window.horno28Supabase,
+    negocio: window.HORNO28_CURRENT_BUSINESS_ID,
+    estadoDocumento: document.readyState
+});
 
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', start, { once: true });
