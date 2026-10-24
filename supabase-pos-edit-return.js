@@ -125,12 +125,57 @@
       if(error)throw error;closeEditor();await refresh();await refreshInventoryAndTreasury();notify('Venta actualizada. Inventario y tesorería sincronizados.');
     }catch(e){notify('No se pudo guardar: '+(e.message||e),'error');}
   }
-  async function returnSale(id){
-    const s=cache.find(x=>x.id===id);if(!s)return notify('No se encontró la venta.','error');if(s.status==='cancelled')return notify('Esta venta ya fue devuelta.','error');
-    const reason=prompt('Motivo de la devolución (opcional):','Devolución general');if(reason===null)return;
-    if(!confirm(`Confirmar devolución total de ${money(s.total)}?\nSe revertirá el inventario y se registrará el egreso en Tesorería.`))return;
-    try{const {error}=await db().rpc('return_pos_sale',{p_business_id:biz(),p_sale_id:id,p_reason:reason.trim()||'Devolución general'});if(error)throw error;await refresh();await refreshInventoryAndTreasury();notify('Devolución registrada correctamente.');}
-    catch(e){notify('No se pudo devolver la venta: '+(e.message||e),'error');}
+  
+async function returnSale(id) {
+  const s = cache.find(x => x.id === id);
+
+  if (!s) {
+    return notify('No se encontró la venta.', 'error');
+  }
+
+  if (s.status === 'cancelled') {
+    return notify('Esta venta ya fue devuelta.', 'error');
+  }
+
+  const reason = prompt(
+    'Motivo de la devolución (opcional):',
+    'Devolución general'
+  );
+
+  if (reason === null) return;
+
+  const cleanReason = reason.trim() || 'Devolución general';
+
+  const confirmed = confirm(
+    `¿Confirmar la devolución total de ${money(s.total)}?\n\n` +
+    'Se registrará un egreso en Tesorería con el medio de pago ' +
+    'original de la venta.\n\n' +
+    'Importante: los ingredientes no se repondrán automáticamente.'
+  );
+
+  if (!confirmed) return;
+
+  try {
+    const { error } = await db().rpc('return_pos_sale', {
+      p_business_id: biz(),
+      p_sale_id: id,
+      p_reason: cleanReason
+    });
+
+    if (error) throw error;
+
+    await refresh();
+    await refreshInventoryAndTreasury();
+
+    notify('Devolución registrada correctamente.');
+  } catch (e) {
+    notify(
+      'No se pudo devolver la venta: ' + (e.message || e),
+      'error'
+    );
+  }
+}
+
   }
   async function deleteSale(id){
     const s=cache.find(x=>x.id===id);if(!s)return notify('No se encontró la venta.','error');
