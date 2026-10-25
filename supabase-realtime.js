@@ -128,6 +128,10 @@ console.log('[HORNO28 Realtime] Intentando crear canal', {
     negocio: id,
     nombre: channelName()
 });
+       console.log(
+    '[HORNO28 Realtime] Creando canal para negocio:',
+    id
+);
         const channel = SB
             .channel(channelName())
             .on(
@@ -210,6 +214,11 @@ console.log('[HORNO28 Realtime] Intentando crear canal', {
 
     // Auth puede tardar unos instantes en establecer CURRENT_BUSINESS_ID.
     const start = () => setTimeout(subscribe, 500);
+   console.log(
+    '[HORNO28 Realtime] Archivo cargado',
+    'Cliente:', !!window.horno28Supabase,
+    'Negocio:', window.HORNO28_CURRENT_BUSINESS_ID
+);
    console.log('[HORNO28 Realtime] Módulo cargado', {
     clienteDisponible: !!window.horno28Supabase,
     negocio: window.HORNO28_CURRENT_BUSINESS_ID,
